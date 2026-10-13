@@ -11,3 +11,5 @@ Build the unmodified upstream revision before the modified binary, using the sam
 Use `make` to build. The inherited `build.sh` kills a running MiSTer process and uploads over FTP; do not use it for local compilation or CI. Do not automatically deploy experimental Main, flash media, change FPGA cores, or modify user ROMs, saves, configuration or the prior rebuild workspace.
 
 Maintain `docs/fork-status.md` with changes, validation, limitations and the next concrete work. The persistent goal remains active while useful independent work remains. Hardware-dependent findings need a test plan and actual hardware evidence before a stability claim.
+
+Track upstream using `docs/upstream-review.md`. Compare overlapping fixes by behavior and evidence, and integrate useful upstream work after validation. Keep an explicit review ledger; seeing a new commit does not mark it reviewed. Daily heartbeat `review-mister-upstream` is lower priority than active improvements and stays quiet while upstream is unchanged or non-actionable.

@@ -21,6 +21,8 @@ The starting upstream revision is `2dd3662cccd45d54d3d383bf9f7d80f6f57e6d03`, fe
 | [1013](https://github.com/MiSTer-devel/Main_MiSTer/issues/1013), zero MRA map | Current loader contains explicit handling; an open report alone is insufficient to justify another patch. |
 | Wi-Fi reports 1302 and 1319 | Driver and kernel scope. A Main patch cannot supply missing Linux drivers. |
 | [1326](https://github.com/MiSTer-devel/Main_MiSTer/issues/1326), missing NumLock | Existing remapping runs before emulation dispatch. The replacement key must be pressed first on the short keyboard, then NumLock on the borrowed keyboard. Test this procedure before adding another input setting. |
+| [1251](https://github.com/MiSTer-devel/Main_MiSTer/issues/1251), lookahead hides rows | Fixed in inherited [1256](https://github.com/MiSTer-devel/Main_MiSTer/pull/1256). A production probe reproduces earlier missing rows and finds no gaps in current pagination. No new patch. |
+| [1127](https://github.com/MiSTer-devel/Main_MiSTer/issues/1127), Info popup spikes | Production-function host tracing confirms 68 redundant SPD byte writes and two reads across popup entry/exit on ordinary HDMI with default SPD settings. Direct Video metadata actually changes. Hardware latency is unmeasured; a narrow ordinary-HDMI optimization is the next experiment. |
 
 ## Validation and next work
 
@@ -28,6 +30,8 @@ The pristine upstream and reviewed fork both compile with Arm GCC 10.2.1, using 
 
 All three host regression suites pass with GCC 15.3.0: nine VRR cases, real ZIP and comparator tests, and Menu clock/layout tests. Identical video and browser tests fail against the starting upstream source. Host GCC 15 reports an existing ZIP-cache `strncpy` warning; the patched ARM build adds no warning. Independent review caught and corrected clipping of the combined Main/OS version row.
 
-The CI workflow pins the Linux Arm compiler archive by SHA256 and builds the same pristine baseline before the fork. It runs the host regressions and saves an experimental candidate, source archive, commit identifier, hashes and logs. CI execution is tracked separately from the completed local builds.
+The CI workflow pins the Linux Arm compiler archive by SHA256 and builds the same pristine baseline before the fork. It runs the host regressions and saves an experimental candidate, source archive, commit identifier, hashes and logs. [The first hosted run passed](https://github.com/djjohnson13p/Main_MiSTer/actions/runs/38485276379) for source commit `7885a7ed62fc6fe1b55afd3904e851acc5433c0e`.
 
-The [community test procedure](community-testing.md) covers recovery, Menu navigation, controller input, core loading, HDMI reconnect and both clock modes. VRR requires compatible FreeSync and VESA displays. Physical device testing and community outreach are pending. Next software work is to audit the lookahead and input-mapping reports against current source and reproduce any remaining defects before patching them.
+The [community test procedure](community-testing.md) covers recovery, Menu navigation, controller input, core loading, HDMI reconnect and both clock modes. VRR requires compatible FreeSync and VESA displays. Physical device testing and community outreach are pending. Next software work is the narrow Info popup experiment, followed by further input-mapping review.
+
+Use the [upstream review policy](upstream-review.md) to monitor official changes, compare overlapping fixes, and integrate useful upstream work after validation. A quiet daily heartbeat and an explicit review ledger keep that work separate from untested assumptions.
