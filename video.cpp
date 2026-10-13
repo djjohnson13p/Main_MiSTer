@@ -1646,6 +1646,8 @@ static void hdmi_config_init()
 
 	hdmi_config_audio();
 	hdmi_config_set_csc();
+	// Register 0x40 was cleared, so cached VRR packets must be re-applied.
+	last_vrr_mode = 0xFF;
 }
 
 static void hdmi_config_set_hdr()
@@ -3449,7 +3451,6 @@ void video_mode_adjust(bool force)
 			hdmi_config_init();
 			hdmi_invalidate_mode_cache();
 			hdmi_config_set_hdr();
-			last_vrr_mode = 0xFF;
 			video_set_mode(&v_def, 0);
 			user_io_send_buttons(1);
 			rep_force = true;

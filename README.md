@@ -1,4 +1,10 @@
-# Main_MiSTer Main Binary and Wiki Repo
+# Independent MiSTer Main fork
+
+This is [djjohnson13p's experimental fork](https://github.com/djjohnson13p/Main_MiSTer) of the official MiSTer Main software, developed with AI assistance. It is not an official MiSTer-devel release. Changes, testing status and community test plans are recorded in [fork development status](docs/fork-status.md). Development uses `independent/main`; experimental builds carry a `-x1` version suffix. No upstream pull requests are planned.
+
+Build with `make`. The inherited `build.sh` also uploads to a device and should only be used after reviewing its deployment behavior.
+
+# Upstream Main_MiSTer information
 
 This repo serves as the home for the MiSTer Main binaries and the Wiki.
 

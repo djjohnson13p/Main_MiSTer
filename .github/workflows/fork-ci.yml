@@ -1,0 +1,68 @@
+name: Independent fork build and regressions
+
+on:
+  push:
+    branches: [independent/main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Host regression tests
+        run: |
+          python3 tests/menu_clock_regression.py
+          python3 tests/file_browser_tests.py
+          python3 tests/video_vrr_regression.py
+      - name: Install the matching Arm toolchain
+        run: |
+          url=https://developer.arm.com/-/media/Files/downloads/gnu-a/10.2-2020.11/binrel
+          archive=gcc-arm-10.2-2020.11-x86_64-arm-none-linux-gnueabihf.tar.xz
+          curl --fail --location --retry 3 "$url/$archive" -o "$RUNNER_TEMP/$archive"
+          echo "102825ae56c9e00142d06f35d2bdd3299edb6060e84a275a25b095e66fd3fc2a  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gcc-arm-10.2-2020.11-x86_64-arm-none-linux-gnueabihf/bin" >> "$GITHUB_PATH"
+      - name: Build pristine upstream baseline
+        run: |
+          git fetch --no-tags --depth=1 origin 2dd3662cccd45d54d3d383bf9f7d80f6f57e6d03
+          git worktree add --detach "$RUNNER_TEMP/mister-baseline" 2dd3662cccd45d54d3d383bf9f7d80f6f57e6d03
+          make -C "$RUNNER_TEMP/mister-baseline" MAKEFLAGS=-j2 2>&1 | tee baseline-build.log
+      - name: Build experimental fork
+        run: make MAKEFLAGS=-j2 2>&1 | tee fork-build.log
+      - name: Package experimental test candidate
+        run: |
+          mkdir candidate
+          cp bin/MiSTer LICENSE docs/community-testing.md candidate/
+          git rev-parse HEAD > candidate/SOURCE_COMMIT.txt
+          git archive --format=zip --output=candidate/source.zip HEAD
+          arm-none-linux-gnueabihf-readelf -h -A bin/MiSTer > candidate/ELF.txt
+          arm-none-linux-gnueabihf-gcc --version > candidate/COMPILER.txt
+          cp baseline-build.log fork-build.log candidate/
+          cd candidate
+          sha256sum MiSTer source.zip > SHA256SUMS.txt
+      - name: Save experimental candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: MiSTer-experimental-${{ github.sha }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Save build diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-${{ github.sha }}
+          path: '*-build.log'
+          if-no-files-found: ignore
+          retention-days: 30

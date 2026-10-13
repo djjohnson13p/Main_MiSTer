@@ -277,7 +277,7 @@ static int isPathDirectory(const char *path, int use_zip = 1)
 		{
 			char zip_fname[256];
 			mz_zip_reader_get_filename(&last_zip_archive, i, &zip_fname[0], sizeof(zip_fname));
-			if (strcasestr(zip_fname, file_path))
+			if (!strncasecmp(zip_fname, file_path, strlen(file_path)))
 			{
 				return 1;
 			}
@@ -1357,8 +1357,9 @@ struct DirentComp
 		}
 #endif
 
-		if ((de1.de.d_type == DT_DIR) && !strcmp(de1.altname, "..")) return true;
-		if ((de2.de.d_type == DT_DIR) && !strcmp(de2.altname, "..")) return false;
+		bool parent1 = (de1.de.d_type == DT_DIR) && !strcmp(de1.altname, "..");
+		bool parent2 = (de2.de.d_type == DT_DIR) && !strcmp(de2.altname, "..");
+		if (parent1 || parent2) return parent1 && !parent2;
 
 		if ((de1.de.d_type == DT_DIR) && (de2.de.d_type != DT_DIR)) return true;
 		if ((de1.de.d_type != DT_DIR) && (de2.de.d_type == DT_DIR)) return false;

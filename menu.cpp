@@ -1113,6 +1113,13 @@ static void *close_pipe_async(void *arg)
 	return NULL;
 }
 
+static void menu_format_datetime(char *dest, size_t size, const struct tm *timeinfo)
+{
+	size_t length = strftime(dest, size, cfg.osd_clock_12h ? "%b %d %I:%M:%S %p" : "%b %d %a%H:%M:%S", timeinfo);
+	// The existing 24-hour layout uses two weekday letters to fit the OSD.
+	if (!cfg.osd_clock_12h && length > 9) dest[9] = ' ';
+}
+
 void HandleUI(void)
 {
 	PROFILE_FUNCTION();
@@ -7346,7 +7353,7 @@ void HandleUI(void)
 			FILE *f = fopen("/MiSTer.version", "r");
 			if (f)
 			{
-				if (fread(str, 6, 1, f)) sprintf(s, " MiSTer v%s,  OS v%s", version + 5, str);
+				if (fread(str, 6, 1, f)) sprintf(s, "MiSTer v%s, OS v%s", version + 5, str);
 				fclose(f);
 			}
 		}
@@ -8308,7 +8315,7 @@ void HandleUI(void)
 				struct tm tm = *localtime(&t);
 				if (tm.tm_year >= 117)
 				{
-					strftime(str + strlen(str), sizeof(str) - 1 - strlen(str), "%b %d %a%H:%M:%S", &tm);
+					menu_format_datetime(str + strlen(str), sizeof(str) - 1 - strlen(str), &tm);
 				}
 
 				int n = 8;
@@ -8334,7 +8341,6 @@ void HandleUI(void)
 					}
 				}
 
-				str[22] = ' ';
 			}
 
 			OsdWrite(16, "", 1, 0);
