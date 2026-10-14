@@ -168,6 +168,7 @@
 
 #define UIO_BUFFER_SIZE 16384
 
+bool user_io_init_paths_valid(const char *path, const char *xml);
 void user_io_init(const char *path, const char *xml);
 unsigned char user_io_core_type();
 void user_io_read_core_name();

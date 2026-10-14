@@ -862,7 +862,12 @@ static void parse_config()
 		{
 			if (!strncmp(p, "DEFMRA,", 7))
 			{
-				snprintf(defmra, sizeof(defmra), (p[7] == '/') ? "%s%s" : "%s/_Arcades/%s", getRootDir(), p + 7);
+				int length = snprintf(defmra, sizeof(defmra), (p[7] == '/') ? "%s%s" : "%s/_Arcades/%s", getRootDir(), p + 7);
+				if (length < 0 || (size_t)length >= sizeof(defmra))
+				{
+					defmra[0] = 0;
+					printf("Default MRA path is too long or invalid; ignoring it.\n");
+				}
 			}
 			else if (!strncmp(p, "DIP", 3))
 			{
@@ -1450,6 +1455,12 @@ int user_io_is_dualsdr()
 int user_io_get_width()
 {
 	return fio_size;
+}
+
+bool user_io_init_paths_valid(const char *path, const char *xml)
+{
+	return path && strnlen(path, sizeof(rbf_path)) < sizeof(rbf_path) &&
+		strnlen(xml ? xml : path, sizeof(core_path)) < sizeof(core_path);
 }
 
 void user_io_init(const char *path, const char *xml)

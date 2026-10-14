@@ -35,10 +35,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "osd.h"
 #include "offload.h"
 
-const char *version = "$VER:" VDATE "-x25";
+const char *version = "$VER:" VDATE "-x26";
 
 int main(int argc, char *argv[])
 {
+	const char *startup_path = (argc > 1) ? argv[1] : "";
+	const char *startup_xml = (argc > 2) ? argv[2] : NULL;
+	if (!user_io_init_paths_valid(startup_path, startup_xml))
+	{
+		fprintf(stderr, "Core or XML startup path is too long or invalid.\n");
+		return EXIT_FAILURE;
+	}
+
 	// Always pin main worker process to core #1 as core #0 is the
 	// hardware interrupt handler in Linux.  This reduces idle latency
 	// in the main loop by about 6-7x.
@@ -70,7 +78,7 @@ int main(int argc, char *argv[])
 	}
 
 	FindStorage();
-	user_io_init((argc > 1) ? argv[1] : "",(argc > 2) ? argv[2] : NULL);
+	user_io_init(startup_path, startup_xml);
 
 #ifdef USE_SCHEDULER
 	scheduler_init();

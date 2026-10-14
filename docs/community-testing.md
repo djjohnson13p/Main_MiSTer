@@ -1,12 +1,12 @@
 # Experimental MiSTer Main testing
 
-The `-x25` build changes MiSTer Main, the ARM application. It preserves official FPGA cores and Linux. The fork includes AI-assisted development and is not an official MiSTer-devel release. Compilation and host regressions do not establish hardware compatibility.
+The `-x26` build changes MiSTer Main, the ARM application. It preserves official FPGA cores and Linux. The fork includes AI-assisted development and is not an official MiSTer-devel release. Compilation and host regressions do not establish hardware compatibility.
 
 ## Prepare a recoverable test
 
 Use a spare, working MiSTer card with the same official baseline you normally use. Keep your original card, working Main binary and configuration available so you can recover without relying on a network connection. Verify the candidate's SHA256 against its supplied manifest and record `SOURCE_COMMIT.txt`. Do not copy the example MiSTer.ini over your configured file.
 
-Install only the candidate Main executable using the normal Main replacement procedure for your setup. Keep its accompanying source archive and license. Confirm the version includes `-x25` in the System Settings page before testing. No deployment or card writes are performed by the fork's CI.
+Install only the candidate Main executable using the normal Main replacement procedure for your setup. Keep its accompanying source archive and license. Confirm the version includes `-x26` in the System Settings page before testing. No deployment or card writes are performed by the fork's CI.
 
 ## Record results
 
@@ -14,6 +14,7 @@ Record the exact source commit, board model, Linux version, core versions, displ
 
 | Test | Expected behavior |
 | --- | --- |
+| Startup and default MRA identity | On the spare card, compare normal core launches with no XML argument and ordinary explicit MRA/MGL selections. Where an existing core supplies a valid default MRA, confirm it selects the intended complete file only when no explicit XML is supplied. Record any path rejection diagnostic, then confirm a later normal launch works through the usual procedure. Precise 1,023/1,024-byte seams, repeated descriptor declarations, negative formatter returns and direct NULL/unterminated inputs are host fixture controls. This does not validate earlier FPGA filename assembly or later boot joins. |
 | Core-folder displayed initials | In a core browser on the spare card, first use a folder-only list with no existing raw C match and disposable folders such as `_Cotton` and `_Cypress`, displayed without their first underscore. Press C after opening the list and again after waiting over two seconds: a matching displayed initial must be reachable. Check forward/wrapped selection, a single matching folder, numeric initials, and rapid Co substring filtering. Existing ordinary file/plain-folder matches retain priority. Repeat on eight/sixteen-row browsers, with lookahead enabled/disabled, datecodes, translated names and available ZIP folders. Check ordinary folders/files and +/- groups still navigate normally. This does not add repeated-key cycling or claim to resolve every issue 710 symptom. |
 | Menu and System Settings | Main's experimental suffix and the complete OS version remain readable. Keyboard/controller navigation, file loading and core transitions work. |
 | Clock default | With `osd_clock_12h=0` or omitted, the Menu footer keeps the original 24-hour layout. Network, Bluetooth and SDRAM indicators remain visible. |
@@ -54,6 +55,8 @@ Record the exact source commit, board model, Linux version, core versions, displ
 Restore your known-working Main or switch back to the original card, and verify the version and normal operation. The official updater may replace the experimental Main; record the version before any subsequent tests. Mark unavailable hardware combinations as untested.
 
 ## Scope of this candidate
+
+Startup preflight checks the original core/XML arguments before Main runtime initialization, and default-MRA formatting rejects incomplete names before the default target query or adoption. The focused tests pass 92 unique inputs in both runtime variants with 5,100 assertions; initialization beyond the four tested intervals and physical restart/loading remain pending. Fitting empty and literal paths retain their existing rules.
 
 Core browsing now falls back to a directory's displayed ASCII initial after one leading underscore only when both existing raw-name searches miss. Local production-body tests cover 79 scenarios and 1,727 assertions; physical keyboard, real archive and OSD behavior still need the observations above.
 
