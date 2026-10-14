@@ -60,6 +60,8 @@ def main() -> None:
         "static int isPathDirectory(",
         "struct DirentComp\n",
     ):
+        if marker == "static int isPathDirectory(" and "static int isPathDirectoryPrepared(" in cpp:
+            generated += definition(cpp, "static int isPathDirectoryPrepared(", "file_io.cpp")
         generated += definition(cpp, marker, "file_io.cpp")
 
     with tempfile.TemporaryDirectory(prefix="mister-file-tests-") as temp:

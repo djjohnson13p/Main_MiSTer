@@ -4,6 +4,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <errno.h>
+#include <new>
+#include <string>
 
 #include "../../sxmlc.h"
 #include "../../user_io.h"
@@ -129,16 +132,42 @@ void arcade_sw_send()
 	}
 }
 
+static int arcade_dip_path(const char *name, char *path, size_t capacity)
+{
+	if (!name || !path || !capacity)
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	const size_t prefix_length = sizeof("dips/") - 1;
+	size_t name_length = strlen(name);
+	if (capacity <= prefix_length || name_length >= capacity - prefix_length)
+	{
+		errno = ENAMETOOLONG;
+		return 0;
+	}
+	try
+	{
+		std::string resolved("dips/");
+		resolved.append(name, name_length);
+		memcpy(path, resolved.c_str(), resolved.size() + 1);
+	}
+	catch (const std::bad_alloc &)
+	{
+		errno = ENOMEM;
+		return 0;
+	}
+	return 1;
+}
+
 void arcade_sw_save()
 {
 	sw_struct *sw = arcade_sw();
 	if (sw->dip_num && sw->dip_saved != sw->dip_cur)
 	{
-		static char path[1024];
-		strcpy(path, CONFIG_DIR"/dips/");
-		FileCreatePath(path);
-		strcat(path, sw->name);
-		if (FileSave(path, &sw->dip_cur, sizeof(sw->dip_cur)))
+		char path[1024];
+		if (!arcade_dip_path(sw->name, path, sizeof(path))) return;
+		if (FileSaveConfig(path, &sw->dip_cur, sizeof(sw->dip_cur)))
 		{
 			sw->dip_saved = sw->dip_cur;
 		}
@@ -148,9 +177,8 @@ void arcade_sw_save()
 void arcade_sw_load()
 {
 	sw_struct *sw = arcade_sw();
-	static char path[1024];
-	strcpy(path, "dips/");
-	strcat(path, sw->name);
+	char path[1024];
+	if (!arcade_dip_path(sw->name, path, sizeof(path))) return;
 	FileLoadConfig(path, &sw->dip_cur, sizeof(sw->dip_cur));
 }
 

@@ -77,6 +77,8 @@ def generate(cpp, header, user, menu, mgl_header, user_header=None):
         "int FileCanWrite(", "void create_path(", "void FileGenerateSavePath(",
         ("int " if checked_state else "void ") + "FileGenerateSavestatePath(",
     ):
+        if marker == "static int isPathDirectory(" and "static int isPathDirectoryPrepared(" in cpp:
+            production += definition(cpp, "static int isPathDirectoryPrepared(", "file_io.cpp")
         if checked_state and marker == "int FileGenerateSavestatePath(":
             production += "#include <new>\n"
         production += definition(cpp, marker, "file_io.cpp")

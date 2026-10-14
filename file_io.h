@@ -130,12 +130,13 @@ int FileGenerateSavestatePath(const char *name, char *out_name, size_t capacity,
 #define SCREENSHOT_DEFAULT "screen"
 void FileGenerateScreenshotName(const char *name, char *out_name, const char *extension, int buflen);
 
+// Mutations own complete paths; construction errors return 0 before file I/O.
 int FileSave(const char *name, void *pBuffer, int size);
 int FileLoad(const char *name, void *pBuffer, int size); // supply pBuffer = 0 to get the file size without loading
 int FileDelete(const char *name);
 int DirDelete(const char *name);
 
-//save/load from config dir
+// Complete config/name paths are checked under a captured storage root.
 #define CONFIG_DIR "config"
 const char* GetNameFromPath(char* path);
 int FileSaveConfig(const char *name, void *pBuffer, int size);

@@ -286,19 +286,17 @@ struct stat64* getPathStat(const char *path)
 	return (stat64(full_path, &st) >= 0) ? &st : NULL;
 }
 
-static int isPathDirectory(const char *path, int use_zip = 1)
+static int isPathDirectoryPrepared(char *path, int use_zip = 1)
 {
-	make_fullpath(path);
-
 	char *zip_path, *file_path;
-	if (use_zip && FileIsZipped(full_path, &zip_path, &file_path))
+	if (use_zip && FileIsZipped(path, &zip_path, &file_path))
 	{
 		if (!*file_path)
 		{
 			return 1;
 		}
 
-		if (!OpenZipfileCached(full_path, 0))
+		if (!OpenZipfileCached(path, 0))
 		{
 			printf("isPathDirectory(OpenZipfileCached) Zip:%s, error:%s\n", zip_path,
 				mz_zip_get_error_string(mz_zip_get_last_error(&last_zip_archive)));
@@ -333,10 +331,10 @@ static int isPathDirectory(const char *path, int use_zip = 1)
 	}
 	else
 	{
-		int stmode = get_stmode(full_path);
+		int stmode = get_stmode(path);
 		if (!stmode)
 		{
-			//printf("isPathDirectory(stat) path: %s, error: %s.\n", full_path, strerror(errno));
+			//printf("isPathDirectory(stat) path: %s, error: %s.\n", path, strerror(errno));
 			return 0;
 		}
 
@@ -344,6 +342,12 @@ static int isPathDirectory(const char *path, int use_zip = 1)
 	}
 
 	return 0;
+}
+
+static int isPathDirectory(const char *path, int use_zip = 1)
+{
+	make_fullpath(path);
+	return isPathDirectoryPrepared(full_path, use_zip);
 }
 
 static int isPathRegularFile(const char *path, int use_zip = 1)
@@ -841,14 +845,27 @@ int FileWriteSec(fileTYPE *file, void *pBuffer)
 	return FileWriteAdv(file, pBuffer, 512);
 }
 
-int FileSave(const char *name, void *pBuffer, int size)
+static int resolve_mutation_path(const char *name, char *out, size_t capacity)
 {
-	make_fullpath(name);
+	return FileResolveFullPath((name && name[0] != '/') ? getRootDir() : "", name, out, capacity);
+}
 
+static int prepare_save_temp(const char *target, char *tmp, size_t capacity)
+{
+	size_t length = strlen(target);
+	if (capacity < 5 || length > capacity - 5)
+	{
+		errno = ENAMETOOLONG;
+		return 0;
+	}
+	memcpy(tmp, target, length);
+	memcpy(tmp + length, ".tmp", 5);
+	return 1;
+}
+
+static int save_prepared(const char *target, const char *tmp_path, void *pBuffer, int size)
+{
 	// write a temp file and rename it over the target, so a power cut never leaves a truncated file
-	char tmp_path[sizeof(full_path) + 4];
-	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", full_path);
-
 	int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, S_IRWXU | S_IRWXG | S_IRWXO);
 	if (fd < 0)
 	{
@@ -879,9 +896,9 @@ int FileSave(const char *name, void *pBuffer, int size)
 		return 0;
 	}
 
-	if (rename(tmp_path, full_path))
+	if (rename(tmp_path, target))
 	{
-		printf("FileSave error: rename to %s failed (%s).\n", full_path, strerror(errno));
+		printf("FileSave error: rename to %s failed (%s).\n", target, strerror(errno));
 		unlink(tmp_path);
 		return 0;
 	}
@@ -889,18 +906,34 @@ int FileSave(const char *name, void *pBuffer, int size)
 	return ret;
 }
 
+int FileSave(const char *name, void *pBuffer, int size)
+{
+	char target[sizeof(full_path)];
+	char tmp_path[sizeof(full_path) + 4];
+	if (!resolve_mutation_path(name, target, sizeof(target)) ||
+		!prepare_save_temp(target, tmp_path, sizeof(tmp_path))) return 0;
+	return save_prepared(target, tmp_path, pBuffer, size);
+}
+
+static int delete_prepared(const char *target)
+{
+	printf("delete %s\n", target);
+	return !unlink(target);
+}
+
 int FileDelete(const char *name)
 {
-	make_fullpath(name);
-	printf("delete %s\n", full_path);
-	return !unlink(full_path);
+	char target[sizeof(full_path)];
+	if (!resolve_mutation_path(name, target, sizeof(target))) return 0;
+	return delete_prepared(target);
 }
 
 int DirDelete(const char *name)
 {
-	make_fullpath(name);
-	printf("rmdir %s\n", full_path);
-	return !rmdir(full_path);
+	char target[sizeof(full_path)];
+	if (!resolve_mutation_path(name, target, sizeof(target))) return 0;
+	printf("rmdir %s\n", target);
+	return !rmdir(target);
 }
 
 const char* GetNameFromPath(char *path)
@@ -933,35 +966,101 @@ int FileLoad(const char *name, void *pBuffer, int size)
 	return ret;
 }
 
+static int resolve_config_path(const char *name, char *out, size_t capacity, size_t *name_offset)
+{
+	if (!name || !out || !capacity)
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	size_t name_length = strlen(name);
+	const size_t prefix_length = sizeof(CONFIG_DIR"/") - 1;
+	if (capacity <= prefix_length || name_length >= capacity - prefix_length)
+	{
+		errno = ENAMETOOLONG;
+		return 0;
+	}
+	try
+	{
+		// Capture the name before reading the root, including borrowed aliases.
+		std::string relative(CONFIG_DIR"/");
+		relative.append(name, name_length);
+		const char *root = getRootDir();
+		if (!root || root[0] != '/')
+		{
+			errno = EINVAL;
+			return 0;
+		}
+		if (!FileResolveFullPath(root, relative.c_str(), out, capacity)) return 0;
+		if (name_offset) *name_offset = strlen(out) - name_length;
+	}
+	catch (const std::bad_alloc &)
+	{
+		errno = ENOMEM;
+		return 0;
+	}
+	return 1;
+}
+
 int FileLoadConfig(const char *name, void *pBuffer, int size)
 {
-	char path[256] = { CONFIG_DIR"/" };
-	strcat(path, name);
-	return FileLoad(path, pBuffer, size);
+	char target[sizeof(full_path)];
+	if (!resolve_config_path(name, target, sizeof(target), nullptr)) return 0;
+	return FileLoad(target, pBuffer, size);
+}
+
+static int create_config_directory(const char *directory)
+{
+	if (!directory || directory[0] != '/')
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	char query[sizeof(full_path)];
+	size_t length = strlen(directory);
+	if (length >= sizeof(query) - 1)
+	{
+		errno = ENAMETOOLONG;
+		return 0;
+	}
+	// The prepared query can split ZIP paths and append a member slash.
+	// Keep its mutable copy separate from the exact directory mkdir target.
+	memcpy(query, directory, length + 1);
+	if (isPathDirectoryPrepared(query)) return 1;
+	return !mkdir(directory, S_IRWXU | S_IRWXG | S_IRWXO);
 }
 
 int FileSaveConfig(const char *name, void *pBuffer, int size)
 {
-	char path[256] = { CONFIG_DIR };
-	const char *p;
-	while ((p = strchr(name, '/')))
-	{
-		strcat(path, "/");
-		strncat(path, name, p - name);
-		name = ++p;
-		FileCreatePath(path);
-	}
+	char target[sizeof(full_path)];
+	char tmp_path[sizeof(full_path) + 4];
+	size_t name_offset = 0;
+	if (!resolve_config_path(name, target, sizeof(target), &name_offset) ||
+		!prepare_save_temp(target, tmp_path, sizeof(tmp_path))) return 0;
 
-	strcat(path, "/");
-	strcat(path, name);
-	return FileSave(path, pBuffer, size);
+	char directory[sizeof(full_path)];
+	memcpy(directory, target, strlen(target) + 1);
+	// Each owned absolute prefix excludes the target's next slash, leaving
+	// room for the prepared ZIP-directory query's appended member slash.
+	for (char *p = strchr(directory + name_offset, '/'); p; p = strchr(p + 1, '/'))
+	{
+		*p = 0;
+		if (directory[0] != '/')
+		{
+			errno = EINVAL;
+			return 0;
+		}
+		create_config_directory(directory);
+		*p = '/';
+	}
+	return save_prepared(target, tmp_path, pBuffer, size);
 }
 
 int FileDeleteConfig(const char *name)
 {
-	char path[256] = { CONFIG_DIR"/" };
-	strcat(path, name);
-	return FileDelete(path);
+	char target[sizeof(full_path)];
+	if (!resolve_config_path(name, target, sizeof(target), nullptr)) return 0;
+	return delete_prepared(target);
 }
 
 int FileExists(const char *name, int use_zip)
