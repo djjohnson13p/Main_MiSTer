@@ -64,7 +64,9 @@ def generate(source, generator):
             production += "#undef findGameAsset\n"
         if marker == "int FileSeek(":
             production += '#pragma GCC diagnostic pop\n'
-    transfer = "#define FileReadAdv trace_FileReadAdv\n#define user_io_file_tx production_user_io_file_tx\n"
+    # user_io.cpp includes limits.h; extracted transfer definitions retain that
+    # dependency rather than relying on a host standard library's transitive includes.
+    transfer = "#include <limits.h>\n#define FileReadAdv trace_FileReadAdv\n#define user_io_file_tx production_user_io_file_tx\n"
     transfer += "#define user_io_file_tx_checked production_user_io_file_tx_checked\n"
     if "UserIoFileTxResult user_io_file_tx_checked(" in user:
         transfer += definition(user, "UserIoFileTxResult user_io_file_tx_checked(", "user_io.cpp")
