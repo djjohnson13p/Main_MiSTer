@@ -632,6 +632,18 @@ static int xml_send_rom(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, cons
 	int cheat_size = 0;
 	int cheat_max = 0;
 
+	// Special nodes must not reset element state; CDATA is one text fragment.
+	if (evt == XML_EVENT_START_NODE)
+	{
+		if (node->tag_type == TAG_CDATA)
+		{
+			evt = XML_EVENT_TEXT;
+			text = node->tag;
+		}
+		else if (node->tag_type != TAG_FATHER && node->tag_type != TAG_SELF) return true;
+	}
+	else if (evt == XML_EVENT_END_NODE && node->tag_type != TAG_END && node->tag_type != TAG_SELF) return true;
+
 	switch (evt)
 	{
 	case XML_EVENT_START_DOC:
