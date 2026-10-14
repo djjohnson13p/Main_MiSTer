@@ -22,7 +22,7 @@ static advancedButtonMap abm_edit_map = {};
 static advancedButtonMap *abm_edit_ptr = nullptr;
 static char s[256] = {};
 static const char *info_top = "top", *info_bottom = "bottom";
-static bool menu = false, back = false, select = false, up = false, down = false;
+static bool menu = false, back = false, up = false, down = false;
 static bool left = false, right = false, plus = false, minus = false, recent = false;
 static bool ignore_osd_release = false;
 static int select_ini = 0;

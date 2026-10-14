@@ -92,7 +92,9 @@ def generate(source, generator):
         ui += block(menu, marker, "menu.cpp")
     prefix_start = menu.index("\t// decode and set events", menu.index("void HandleUI("))
     prefix_end = menu.index("\t\tcase KEY_F1:", prefix_start)
-    ui += "static void tick_ui()\n{\n uint32_t c = menu_key_get(); ui_prefix_key = c;\n"
+    # HandleUI's select flag is local; preserve its scope to avoid the Linux
+    # system select() declaration exposed by the normal libc headers.
+    ui += "static void tick_ui()\n{\n bool select = false;\n uint32_t c = menu_key_get(); ui_prefix_key = c;\n"
     ui += f'#line {menu.count(chr(10), 0, prefix_start) + 1} "menu.cpp"\n' + menu[prefix_start:prefix_end]
     ui += "\n default: break;\n }\n }\n switch (menustate) {\n"
     for first, last in (("\n\tcase MENU_JOYKBDMAP:", "\n\tcase MENU_ABOUT1:"),
