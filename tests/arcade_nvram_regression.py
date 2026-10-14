@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,7 +180,7 @@ def main():
             (work/n).write_text(text,encoding="utf-8",newline="\n")
         obj, executable = work/"parser.o", work/("probe.exe" if os.name=="nt" else "probe")
         common = ["-O2","-Wall","-Wextra","-Werror","-I",str(work)]
-        commands = [cc+["-std=gnu99"]+common+["-c",str(work/"arcade_nvram_sxmlc.c"),"-o",str(obj)],
+        commands = [cc+["-std=gnu99"]+common+["-Wno-error=format-security","-c",str(work/"arcade_nvram_sxmlc.c"),"-o",str(obj)],
                     cxx+["-std=gnu++14","-D_GNU_SOURCE","-D_LARGEFILE64_SOURCE"]+common+
                     ["-I",str(work/"support/arcade"),str(ROOT/"tests/arcade_nvram_regression.cpp"),
                      str(work/"support/arcade/buffer.cpp"),str(obj),"-o",str(executable)]]
@@ -191,6 +192,8 @@ def main():
                 if args.report:
                     args.report.write_text(json.dumps(error,indent=2)+"\n",encoding="utf-8",newline="\n")
                 raise RuntimeError(error["fixture_error"]+"\n"+result.stdout+result.stderr)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr, end="")
         for scenario in SCENARIOS:
             result = subprocess.run([str(executable),scenario],capture_output=True,text=True,env=env,timeout=15)
             rows = [json.loads(line[5:]) for line in result.stdout.splitlines() if line.startswith("JSON ")]
