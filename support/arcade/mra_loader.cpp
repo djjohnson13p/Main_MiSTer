@@ -1341,8 +1341,9 @@ int arcade_send_rom(const char *xml)
 	const char *p = strrchr(xml, '/');
 	p = p ? p + 1 : xml;
 	snprintf(switches.name, sizeof(switches.name), "%s", p);
-	char *ext = strcasestr(switches.name, ".mra");
-	if (ext) strcpy(ext, ".dip");
+	const size_t name_length = strlen(switches.name);
+	if (name_length >= 4 && !strcasecmp(switches.name + name_length - 4, ".mra"))
+		strcpy(switches.name + name_length - 4, ".dip");
 
 	arcade_nvm_reset();
 	if (arcade_nvm_name(p, nvram_name, sizeof(nvram_name)))

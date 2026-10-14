@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 
 
@@ -37,6 +38,7 @@ SCENARIOS = (
     "config-null", "config-root-reject", "config-null-root", "config-allocation", "recovery",
     "config-builder", "temp-builder", "dip-builder", "dip-mra-243", "dip-mra-244", "dip-mra-255",
     "dip-reject-load", "dip-reject-save", "dip-save-failure", "dip-load-failure", "dip-noop",
+    "dip-internal-suffix", "dip-internal-case", "dip-internal-adjacent", "dip-internal-distinct",
 )
 PRIOR_EXCLUSIONS = frozenset(("mutation-null", "mutation-root-reject", "mutation-null-root", "mutation-allocation",
                               "config-null", "config-root-reject", "config-null-root", "config-allocation",
@@ -117,8 +119,13 @@ def generate(source):
         production += definition(arcade, "static int arcade_dip_path(", "support/arcade/mra_loader.cpp")
     else:
         production += "#define strcat guarded_strcat\n"
+    production += "__attribute__((unused)) static int observed_FileLoadConfig(const char *n, void *b, int z) { int r=FileLoadConfig(n,b,z); record_file_api(\"FileLoadConfig\",n,r); return r; }\n"
+    production += "__attribute__((unused)) static int observed_FileSaveConfig(const char *n, void *b, int z) { int r=FileSaveConfig(n,b,z); record_file_api(\"FileSaveConfig\",n,r); return r; }\n"
+    production += "__attribute__((unused)) static int observed_FileSave(const char *n, void *b, int z) { int r=FileSave(n,b,z); record_file_api(\"FileSave\",n,r); return r; }\n"
+    production += "#define FileLoadConfig observed_FileLoadConfig\n#define FileSaveConfig observed_FileSaveConfig\n#define FileSave observed_FileSave\n"
     for marker in ("void arcade_sw_save()", "void arcade_sw_load()"):
         production += definition(arcade, marker, "support/arcade/mra_loader.cpp")
+    production += "#undef FileSave\n#undef FileSaveConfig\n#undef FileLoadConfig\n"
     if not checked:
         production += "#undef strcat\n"
     selector = definition(arcade, "int arcade_send_rom(", "support/arcade/mra_loader.cpp")
@@ -134,8 +141,11 @@ def main():
     parser.add_argument("--source-ref")
     parser.add_argument("--report", "--output", dest="report", type=Path)
     args = parser.parse_args()
-    source = {name: subprocess.check_output(["git", "-C", str(ROOT), "show", args.source_ref + ":" + name], text=True, encoding="utf-8")
-              if args.source_ref else (ROOT / name).read_text(encoding="utf-8") for name in SOURCES}
+    raw = {name: subprocess.check_output(["git", "-C", str(ROOT), "show", args.source_ref + ":" + name])
+           if args.source_ref else (ROOT / name).read_bytes() for name in SOURCES}
+    source = {name: data.decode("utf-8").replace("\r\n", "\n") for name, data in raw.items()}
+    test_before = {name: hashlib.sha256((ROOT / "tests" / name).read_bytes()).hexdigest()
+                   for name in ("config_mutation_regression.cpp", "config_mutation_regression.py")}
     types, production, checked = generate(source)
     environment = os.environ.copy()
     compiler = [args.cxx] if Path(args.cxx).is_file() else shlex.split(args.cxx, posix=os.name != "nt")
@@ -151,6 +161,8 @@ def main():
         build = subprocess.run(command, capture_output=True, text=True, env=environment)
         if build.returncode:
             raise RuntimeError("Compilation is not behavioral evidence:\n" + build.stdout + build.stderr)
+        if build.stderr:
+            print(build.stderr, file=sys.stderr, end="")
         runs = []
         for scenario in SCENARIOS:
             result = subprocess.run([str(executable), scenario], capture_output=True, text=True, env=environment, timeout=15)
@@ -159,20 +171,29 @@ def main():
                     rows[0]["failures"] not in (0, 1) or result.returncode != rows[0]["failures"] or
                     rows[0]["excluded"] != (not checked and scenario in PRIOR_EXCLUSIONS)):
                 raise RuntimeError("Incomplete scenario is not behavioral evidence: %s\n%s\n%s" % (scenario, result.stdout, result.stderr))
+            if scenario.startswith("dip-internal-") and (rows[0]["trapped"] or not rows[0]["dip_identity_completed"]):
+                raise RuntimeError("Incomplete DIP identity control is not behavioral evidence: " + scenario)
             runs.append({"scenario": scenario, "returncode": result.returncode, "summary": rows[0], "stdout": result.stdout, "stderr": result.stderr})
             print("%s: %s" % ("EXCLUDED" if rows[0]["excluded"] else "FAIL" if result.returncode else "PASS", scenario))
         names = [run["scenario"] for run in runs]
         if len(names) != len(SCENARIOS) or len(set(names)) != len(names) or set(names) != set(SCENARIOS):
             raise RuntimeError("Incomplete scenario coverage")
+        test_after = {name: hashlib.sha256((ROOT / "tests" / name).read_bytes()).hexdigest() for name in test_before}
+        if test_after != test_before:
+            raise RuntimeError("Fixture changed during run")
+        raw_after = {name: (ROOT / name).read_bytes() for name in SOURCES} if not args.source_ref else raw
+        if raw_after != raw:
+            raise RuntimeError("Production source changed during run")
         failures = sum(run["summary"]["failures"] for run in runs)
         exclusions = sum(run["summary"]["excluded"] for run in runs)
         report = {"source_ref": args.source_ref or "working tree", "checked_candidate": checked,
                   "source_hash_basis": "UTF-8 source text with CRLF normalized to LF; test hashes use raw file bytes",
                   "source_sha256": {name: hashlib.sha256(text.encode()).hexdigest() for name, text in source.items()},
-                  "test_sha256": {name: hashlib.sha256((ROOT / "tests" / name).read_bytes()).hexdigest()
-                                  for name in ("config_mutation_regression.cpp", "config_mutation_regression.py")},
+                  "source_raw_sha256_before": {name: hashlib.sha256(data).hexdigest() for name, data in raw.items()},
+                  "source_raw_sha256_after": {name: hashlib.sha256(data).hexdigest() for name, data in raw_after.items()},
+                  "test_sha256": test_after, "test_raw_sha256_before": test_before, "test_raw_sha256_after": test_after,
                   "extracted_sha256": {"types": hashlib.sha256(types.encode()).hexdigest(), "production": hashlib.sha256(production.encode()).hexdigest()},
-                  "compile_command": command, "coverage_complete": True,
+                  "compile_command": command, "compile_stdout": build.stdout, "compile_stderr": build.stderr, "coverage_complete": True,
                   "summary": {"scenarios": len(runs), "checks": len(runs), "failures": failures, "excluded": exclusions,
                               "prevented_boundaries": sum(run["summary"]["trapped"] for run in runs), "real_filesystem_operations": 0},
                   "runs": runs, "hardware_tested": False,

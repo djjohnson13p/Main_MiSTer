@@ -78,7 +78,18 @@ static std::map<std::string, std::vector<uint8_t>> files;
 static std::vector<uint8_t> temporary_payload;
 static std::string opened, renamed, loaded, load_argument;
 static int fault;
-static bool fail_directory, fail_load;
+static bool fail_directory, fail_load, missing_map_load;
+struct FileApiReturn { std::string api, name; int value; };
+static std::vector<FileApiReturn> file_api_returns;
+static bool dip_identity_completed;
+static std::vector<std::string> dip_inputs, dip_names, dip_targets;
+static std::vector<uint64_t> dip_loaded_values, dip_wanted_values, dip_saved_markers;
+static void record_file_api(const char *api, const char *name, int value)
+{
+    const int saved_errno=errno;
+    file_api_returns.push_back({api,name,value});
+    errno=saved_errno;
+}
 static unsigned load_reads, closes;
 // The query treats archive state as opaque; metadata/cache endpoints are spies.
 struct QueryArchive {};
@@ -205,7 +216,7 @@ int FileOpen(fileTYPE *file, const char *name, char)
     load_argument = name;
     loaded = absolute(name);
     events.push_back("load-open:" + loaded);
-    if (fail_load) { errno = ENOENT; return 0; }
+    if (fail_load || (missing_map_load && files.find(loaded)==files.end())) { errno = ENOENT; return 0; }
     file->filp = reinterpret_cast<FILE *>(uintptr_t(1));
     auto found = files.find(loaded);
     file->size = found == files.end() ? 8 : static_cast<__off64_t>(found->second.size());
@@ -299,7 +310,9 @@ static void reset()
     null_root = change_root_in_directory = false;
     root_calls = load_reads = closes = 0;
     query_kind = QUERY_MISSING; query_memory = nullptr; query_original.clear(); minimum_query_append_room = sizeof full_path;
-    fault = 0; fail_directory = fail_load = false;
+    fault = 0; fail_directory = fail_load = missing_map_load = dip_identity_completed = false;
+    file_api_returns.clear(); dip_inputs.clear(); dip_names.clear(); dip_targets.clear();
+    dip_loaded_values.clear(); dip_wanted_values.clear(); dip_saved_markers.clear();
     events.clear(); files.clear(); temporary_payload.clear();
     opened.clear(); renamed.clear(); loaded.clear(); load_argument.clear();
     std::strcpy(full_path, "PRIOR_IDENTITY");
@@ -433,6 +446,39 @@ static void run_case(const std::string &name)
             correct &= renamed == paths[index] && switches.dip_saved == switches.dip_cur && data_at(paths[index], &switches.dip_cur, 8);
         }
         check(correct && paths[0] != paths[1] && load_reads == 2 && count("rename:") == 2, "reachable complete MRA components and distinct same-prefix DIP payload identities");
+    } else if (name == "dip-internal-suffix" || name == "dip-internal-case" ||
+               name == "dip-internal-adjacent" || name == "dip-internal-distinct") {
+        missing_map_load = true;
+        const std::vector<std::string> basenames = name == "dip-internal-suffix" ? std::vector<std::string>{"A.mra.extra.mra"} :
+            name == "dip-internal-case" ? std::vector<std::string>{"A.MRA.extra.MRA"} :
+            name == "dip-internal-adjacent" ? std::vector<std::string>{"A.mra.mra"} :
+            std::vector<std::string>{"A.mra.extraA.mra","A.mra.extraB.mra"};
+        bool correct = true;
+        for (size_t index = 0; index < basenames.size(); index++) {
+            const std::string expected = basenames[index].substr(0,basenames[index].size()-4) + ".dip";
+            const std::string target = "/media/fat/config/dips/" + expected;
+            const uint64_t wanted = 0x0123456789abcdefULL + index;
+            const auto *bytes = reinterpret_cast<const uint8_t *>(&wanted);
+            files[target] = std::vector<uint8_t>(bytes,bytes+sizeof wanted);
+            select_arcade_dip_name(("folder/"+basenames[index]).c_str());
+            dip_inputs.push_back(basenames[index]); dip_names.push_back(switches.name);
+            switches.dip_cur = 0; arcade_sw_load();
+            dip_loaded_values.push_back(switches.dip_cur); dip_wanted_values.push_back(wanted);
+            const std::string actual_load = loaded;
+            switches.dip_num = 1; switches.dip_cur = wanted ^ 0x1111111111111111ULL; switches.dip_saved = 0;
+            arcade_sw_save(); dip_targets.push_back(renamed); dip_saved_markers.push_back(switches.dip_saved);
+            const size_t count = file_api_returns.size();
+            correct &= dip_names.back() == expected && actual_load == target && dip_loaded_values.back() == wanted &&
+                renamed == target && data_at(target,&switches.dip_cur,8) && switches.dip_saved == switches.dip_cur &&
+                count == 2*(index+1) && file_api_returns[count-2].api == "FileLoadConfig" &&
+                file_api_returns[count-2].name == "dips/"+expected && file_api_returns[count-2].value == 8 &&
+                file_api_returns[count-1].api == (HAVE_CHECKED_MUTATION ? "FileSaveConfig" : "FileSave") &&
+                file_api_returns[count-1].value == 8;
+        }
+        if (basenames.size()==2) correct &= dip_targets[0] != dip_targets[1] &&
+            data_at(dip_targets[0],&dip_saved_markers[0],8) && data_at(dip_targets[1],&dip_saved_markers[1],8);
+        dip_identity_completed = true;
+        check(correct,"complete terminal suffix DIP load/save statuses, distinct payload identity and saved marker");
     } else if (name == "dip-reject-load" || name == "dip-reject-save") {
         std::memset(switches.name, 'G', sizeof switches.name - 1);
         switches.name[sizeof switches.name - 1] = 0;
@@ -574,6 +620,21 @@ int main(int argc, char **argv)
     std::printf(",\"renamed\":"); json_string(renamed); std::printf(",\"loaded\":"); json_string(loaded);
     std::printf(",\"load_argument\":"); json_string(load_argument); std::printf(",\"events\":[");
     for (size_t index = 0; index < events.size(); index++) { if (index) std::putchar(','); json_string(events[index]); }
-    std::printf("],\"real_filesystem_operations\":0}\n");
+    std::printf("],\"file_api_returns\":[");
+    for (size_t i=0;i<file_api_returns.size();i++) {
+        if(i) std::putchar(','); std::printf("{\"api\":"); json_string(file_api_returns[i].api);
+        std::printf(",\"name\":"); json_string(file_api_returns[i].name);
+        std::printf(",\"return_observed\":true,\"return_value\":%d}",file_api_returns[i].value);
+    }
+    std::printf("],\"dip_identity_completed\":%s",dip_identity_completed ? "true":"false");
+    auto strings=[](const char *key,const std::vector<std::string> &v) {
+        std::printf(",\"%s\":[",key); for(size_t i=0;i<v.size();i++) { if(i) std::putchar(','); json_string(v[i]); } std::putchar(']');
+    };
+    auto integers=[](const char *key,const std::vector<uint64_t> &v) {
+        std::printf(",\"%s\":[",key); for(size_t i=0;i<v.size();i++) { if(i) std::putchar(','); std::printf("\"%llu\"",static_cast<unsigned long long>(v[i])); } std::putchar(']');
+    };
+    strings("dip_inputs",dip_inputs); strings("dip_names",dip_names); strings("dip_targets",dip_targets);
+    integers("dip_loaded_values",dip_loaded_values); integers("dip_wanted_values",dip_wanted_values); integers("dip_saved_markers",dip_saved_markers);
+    std::printf(",\"real_filesystem_operations\":0}\n");
     return failures ? 1 : 0;
 }
