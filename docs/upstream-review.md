@@ -28,6 +28,8 @@ Use an isolated review branch or checkout. Preserve ongoing work and candidate c
 
 Build the new official baseline and integrated fork with the same toolchain. Run affected regressions and the fork's existing suites; use actual hardware checks for hardware-dependent claims. Publish validated source to our own development branch and retain rollback revisions. Keep unvalidated integrations isolated. Record build failures and deferred commits rather than hiding them or marking them reviewed prematurely.
 
+Record the accepted official baseline in `upstream-base.txt`. CI fetches that exact commit from the official repository and builds it before the fork, and candidate archives retain the baseline identifier. Update this record along with an integration so comparisons follow the official version being adopted.
+
 The development objective is to preserve useful upstream improvements while adding validated fork improvements. That objective does not justify claiming compatibility or speed beyond the tests and measurements performed. CI and physical testing remain distinct evidence levels.
 
 The monitor never opens upstream PRs, issues, reviews or messages, and it never automatically installs experimental software on hardware. The user decides when to invite community testing.

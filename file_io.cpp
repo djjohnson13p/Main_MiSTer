@@ -91,7 +91,12 @@ static int flist_page_step(int direction)
 		// Forward paging follows the current page. Reverse paging precedes
 		// the page whose selection may consume the extra display row.
 		int expanded_entry = direction > 0 ? iSelectedEntry : iSelectedEntry - step;
-		if (flist_entry_is_expanded(expanded_entry)) step--;
+		// Edge scrolling also needs room when the destination expands at the
+		// bottom row. The final item cannot consume a second row there.
+		bool destination_expanded = direction > 0 && !cfg.lookahead
+			&& iSelectedEntry + step < (int)DirItem.size() - 1
+			&& flist_entry_is_expanded(iSelectedEntry + step);
+		if (flist_entry_is_expanded(expanded_entry) || destination_expanded) step--;
 	}
 
 	return step;

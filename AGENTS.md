@@ -13,3 +13,5 @@ Use `make` to build. The inherited `build.sh` kills a running MiSTer process and
 Maintain `docs/fork-status.md` with changes, validation, limitations and the next concrete work. The persistent goal remains active while useful independent work remains. Hardware-dependent findings need a test plan and actual hardware evidence before a stability claim.
 
 Track upstream using `docs/upstream-review.md`. Compare overlapping fixes by behavior and evidence, and integrate useful upstream work after validation. Keep an explicit review ledger; seeing a new commit does not mark it reviewed. Daily heartbeat `review-mister-upstream` is lower priority than active improvements and stays quiet while upstream is unchanged or non-actionable.
+
+`upstream-base.txt` records the exact official baseline used by CI. Advance it when accepting a new official baseline, then compare pristine upstream and integrated fork builds. Do not leave CI pinned to an old baseline after integrating later upstream work. Preserve named candidate commits and bump the short experimental version suffix for a new Main candidate.

@@ -3431,7 +3431,8 @@ void video_mode_adjust(bool force)
 
 	static int menu = 0;
 	int menu_now = menu_present();
-	if(menu != menu_now && cfg.spd_quirk < 2) spd_config_update();
+	// Only Direct Video/RTG SPD contains OSD state; standard HDMI SPD is unchanged.
+	if(menu != menu_now && cfg.spd_quirk < 2 && (video_is_direct() || minimig_rtg_hdmi)) spd_config_update();
 	menu = menu_now;
 
 	if ((vid_changed || output_changed) && !is_menu())

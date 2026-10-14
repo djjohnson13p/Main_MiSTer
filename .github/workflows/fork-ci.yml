@@ -25,7 +25,9 @@ jobs:
           python3 -m unittest discover -s tests -p upstream_review_tests.py -v
           python3 tests/menu_clock_regression.py
           python3 tests/file_browser_tests.py
+          python3 tests/file_pagination_regression.py
           python3 tests/video_vrr_regression.py
+          python3 tests/video_spd_regression.py
       - name: Install the matching Arm toolchain
         run: |
           url=https://developer.arm.com/-/media/Files/downloads/gnu-a/10.2-2020.11/binrel
@@ -36,8 +38,10 @@ jobs:
           echo "$RUNNER_TEMP/gcc-arm-10.2-2020.11-x86_64-arm-none-linux-gnueabihf/bin" >> "$GITHUB_PATH"
       - name: Build pristine upstream baseline
         run: |
-          git fetch --no-tags --depth=1 origin 2dd3662cccd45d54d3d383bf9f7d80f6f57e6d03
-          git worktree add --detach "$RUNNER_TEMP/mister-baseline" 2dd3662cccd45d54d3d383bf9f7d80f6f57e6d03
+          baseline=$(cat upstream-base.txt)
+          [[ "$baseline" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid upstream baseline SHA'; exit 1; }
+          git fetch --no-tags --depth=1 https://github.com/MiSTer-devel/Main_MiSTer.git "$baseline"
+          git worktree add --detach "$RUNNER_TEMP/mister-baseline" "$baseline"
           make -C "$RUNNER_TEMP/mister-baseline" MAKEFLAGS=-j2 2>&1 | tee baseline-build.log
       - name: Build experimental fork
         run: make MAKEFLAGS=-j2 2>&1 | tee fork-build.log
@@ -46,6 +50,7 @@ jobs:
           mkdir candidate
           cp bin/MiSTer LICENSE docs/community-testing.md candidate/
           git rev-parse HEAD > candidate/SOURCE_COMMIT.txt
+          cp upstream-base.txt candidate/UPSTREAM_BASE.txt
           git archive --format=zip --output=candidate/source.zip HEAD
           arm-none-linux-gnueabihf-readelf -h -A bin/MiSTer > candidate/ELF.txt
           arm-none-linux-gnueabihf-gcc --version > candidate/COMPILER.txt
