@@ -16,7 +16,9 @@
 #include <vector>
 #include "cfg.h"
 #include "miniz.h"
-#ifndef __linux__
+#ifdef __linux__
+#include <linux/fs.h>
+#else
 typedef off_t __off64_t;
 #define BLKGETSIZE64 0x80081272UL
 #endif
