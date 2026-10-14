@@ -1808,6 +1808,16 @@ static void get_display_name(direntext_t *dext, const char *ext, int options)
 	if (fext) *fext = 0;
 }
 
+static bool flist_core_display_initial_matches(const direntext_t &entry, int mode, int options)
+{
+	if (!(options & SCANO_CORES) || entry.de.d_type != DT_DIR || entry.altname[0] != '_') return false;
+
+	// Core folder labels omit one leading underscore. Match ASCII initials.
+	unsigned char initial = static_cast<unsigned char>(entry.altname[1]);
+	if (initial >= 'a' && initial <= 'z') initial -= 'a' - 'A';
+	return initial == mode && ((initial >= '0' && initial <= '9') || (initial >= 'A' && initial <= 'Z'));
+}
+
 int ScanDirectory(char* path, int mode, const char *extension, int options, const char *prefix, const char *filter)
 {
 	static char file_name[1024];
@@ -2343,6 +2353,31 @@ int ScanDirectory(char* path, int mode, const char *extension, int options, cons
 						{
 							found = i;
 							break;
+						}
+					}
+				}
+
+				// Preserve every existing raw-name match before considering a core folder label.
+				if (found < 0 && (options & SCANO_CORES))
+				{
+					for (int i = iSelectedEntry+1; i < flist_nDirEntries(); i++)
+					{
+						if (flist_core_display_initial_matches(DirItem[i], mode, options))
+						{
+							found = i;
+							break;
+						}
+					}
+
+					if (found < 0)
+					{
+						for (int i = 0; i < flist_nDirEntries(); i++)
+						{
+							if (flist_core_display_initial_matches(DirItem[i], mode, options))
+							{
+								found = i;
+								break;
+							}
 						}
 					}
 				}

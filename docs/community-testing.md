@@ -1,12 +1,12 @@
 # Experimental MiSTer Main testing
 
-The `-x24` build changes MiSTer Main, the ARM application. It preserves official FPGA cores and Linux. The fork includes AI-assisted development and is not an official MiSTer-devel release. Compilation and host regressions do not establish hardware compatibility.
+The `-x25` build changes MiSTer Main, the ARM application. It preserves official FPGA cores and Linux. The fork includes AI-assisted development and is not an official MiSTer-devel release. Compilation and host regressions do not establish hardware compatibility.
 
 ## Prepare a recoverable test
 
 Use a spare, working MiSTer card with the same official baseline you normally use. Keep your original card, working Main binary and configuration available so you can recover without relying on a network connection. Verify the candidate's SHA256 against its supplied manifest and record `SOURCE_COMMIT.txt`. Do not copy the example MiSTer.ini over your configured file.
 
-Install only the candidate Main executable using the normal Main replacement procedure for your setup. Keep its accompanying source archive and license. Confirm the version includes `-x24` in the System Settings page before testing. No deployment or card writes are performed by the fork's CI.
+Install only the candidate Main executable using the normal Main replacement procedure for your setup. Keep its accompanying source archive and license. Confirm the version includes `-x25` in the System Settings page before testing. No deployment or card writes are performed by the fork's CI.
 
 ## Record results
 
@@ -14,6 +14,7 @@ Record the exact source commit, board model, Linux version, core versions, displ
 
 | Test | Expected behavior |
 | --- | --- |
+| Core-folder displayed initials | In a core browser on the spare card, first use a folder-only list with no existing raw C match and disposable folders such as `_Cotton` and `_Cypress`, displayed without their first underscore. Press C after opening the list and again after waiting over two seconds: a matching displayed initial must be reachable. Check forward/wrapped selection, a single matching folder, numeric initials, and rapid Co substring filtering. Existing ordinary file/plain-folder matches retain priority. Repeat on eight/sixteen-row browsers, with lookahead enabled/disabled, datecodes, translated names and available ZIP folders. Check ordinary folders/files and +/- groups still navigate normally. This does not add repeated-key cycling or claim to resolve every issue 710 symptom. |
 | Menu and System Settings | Main's experimental suffix and the complete OS version remain readable. Keyboard/controller navigation, file loading and core transitions work. |
 | Clock default | With `osd_clock_12h=0` or omitted, the Menu footer keeps the original 24-hour layout. Network, Bluetooth and SDRAM indicators remain visible. |
 | Clock option | With `osd_clock_12h=1`, the footer shows a 12-hour time with AM/PM in place of the weekday. Check midnight and noon using the system's existing time controls. |
@@ -53,5 +54,7 @@ Record the exact source commit, board model, Linux version, core versions, displ
 Restore your known-working Main or switch back to the original card, and verify the version and normal operation. The official updater may replace the experimental Main; record the version before any subsequent tests. Mark unavailable hardware combinations as untested.
 
 ## Scope of this candidate
+
+Core browsing now falls back to a directory's displayed ASCII initial after one leading underscore only when both existing raw-name searches miss. Local production-body tests cover 79 scenarios and 1,727 assertions; physical keyboard, real archive and OSD behavior still need the observations above.
 
 The candidate restores VRR packet programming after HDMI reset, corrects ZIP browser comparisons and paths, offers a 12-hour clock, preserves expanded-name paging rows, and avoids unchanged ordinary-HDMI SPD requests. It corrects remap source selection, release ownership, F12 handoff, ordinary button skips and Advanced capture pairing protection. File handling preserves complete ZIP cache names, resolves eligible MGL F paths through sibling ZIPs, launches literal document paths, retains active metadata after initial open rejection, rejects incomplete MGL filenames without contaminating following actions, and rejects names and paths that cannot fit intact in the file-open APIs. Checked generic transfers stop failed host reads and distinguish incomplete loads. Screenshot workers own their save path before queuing, with a separate relative completion name. Savestate names and all slot paths are checked before binding; rejected binding cannot keep the previous persistence target, and state-size arithmetic cannot wrap into a small save. Arcade scalar metadata joins text through real field completion, bounds core names and preserves existing setname byte truncation and rotation tokens. Arcade XML/root/core paths are checked in full before lookup or handoff; direct arcade-loading path failures retire persistence metadata before I/O. Other save-RAM name producers, legacy path callers, generated-name truncation, the separate addon API and nested GAMEID ordering remain further work. No measured gameplay speedup, Linux driver repair, new FPGA feature or general stability guarantee is claimed. Performance work requires baseline measurements on actual hardware.

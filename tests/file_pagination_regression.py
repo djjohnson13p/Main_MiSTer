@@ -50,6 +50,7 @@ def generate(cpp, header, menu):
         "int flist_iSelectedEntry(",
         "direntext_t* flist_DirItem(",
         "direntext_t* flist_SelectedItem(",
+        "static bool flist_core_display_initial_matches(",
     ):
         # The pre-1256 baseline has no expansion-aware helpers.
         if marker in cpp:
