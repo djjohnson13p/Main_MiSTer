@@ -17,6 +17,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <math.h>
+#include <vector>
 
 #include "input.h"
 #include "autofire.h"
@@ -1737,10 +1738,37 @@ static int grabbed = 1;
 static uint32_t osd_timer = 0;
 static uint32_t map_advance_timer = 0;
 
+// Keep every accepted press, including members replaced in the four-code chord.
+static std::vector<uint32_t> mapping_phase_presses;
+static bool mapping_capture_done = false;
+
+static bool mapping_has_press(int dev, uint16_t code)
+{
+	uint32_t identity = ((uint32_t)dev << 16) | code;
+	for (uint32_t press : mapping_phase_presses)
+	{
+		if (press == identity) return true;
+	}
+	return false;
+}
+
+static void mapping_accept_press(int dev, uint16_t code)
+{
+	if (!mapping_has_press(dev, code)) mapping_phase_presses.push_back(((uint32_t)dev << 16) | code);
+}
+
+static void mapping_complete_capture()
+{
+	mapping_phase_presses.clear();
+	mapping_capture_done = true;
+}
+
 void start_map_setting(int cnt, int set, advancedButtonMap *abm_store)
 {
 	mapping_current_key = 0;
 	mapping_current_dev = -1;
+	mapping_phase_presses.clear();
+	mapping_capture_done = false;
 
 	mapping_button = 0;
 	mapping = 1;
@@ -1884,6 +1912,7 @@ static char *get_kbdmap_name(int dev)
 void finish_map_setting(int dismiss)
 {
 	mapping = 0;
+	mapping_complete_capture();
 	if (mapping_dev<0) return;
 
 	if (mapping_type == 3)
@@ -3214,6 +3243,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 		}
 	}
 
+	// Update combo state above, but only a press accepted in this phase may
+	// release a chord or drive Menu release commands. Match before Escape rewrite.
+	if (mapping && mapping_type == 3 && ev->type == EV_KEY
+		&& (mapping_capture_done || (mapping_dev < 0 && ev->value != 1)
+			|| (ev->value == 0 && !mapping_has_press(dev, origcode)))) return;
+
 	int osd_event = 0;
 	if (old_combo != 3 && input[dev].osd_combo == 3)
 	{
@@ -3245,9 +3280,6 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 
 	if (mapping && mapping_type == 3 && ev->type == EV_KEY)
 	{
-		// A pending opener release/repeat must not select the remap source.
-		if (mapping_dev < 0 && ev->value != 1) return;
-
 		bool jkm_can_intr = mapping_count == 3 && mapping_button <= 1 && mapping_set == 1;
 		if (mapping_dev < 0) mapping_dev = dev;
 		if (ev->value == 1 && ev->code == KEY_ENTER) map_skip = 1;
@@ -3260,6 +3292,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 
 		if (ev->value == 1)
 		{
+			mapping_accept_press(dev, origcode);
 			uint16_t *code_store = mapping_set ==  1 ? mapping_store->input_codes : mapping_store->output_codes;
 			code_store[mapping_button++] = ev->code;
 			mapping_current_dev = mapping_dev;
@@ -3271,6 +3304,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 			if (ev->code == KEY_ESC && (jkm_can_intr || (mapping_count < 3 && mapping_button <= 1)))
 			{
 				osd_timer = 1;
+				if (!is_menu()) mapping_complete_capture();
 				return;
 			}
 
@@ -3278,6 +3312,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 			{
 				mapping_set++;
 				mapping_button = 0;
+				mapping_phase_presses.clear();
 				if (mapping_set > 2)
 				{
 					mapping_set = 1;
@@ -3289,6 +3324,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 			}
 			osd_timer = 0;
 		}
+		if (mapping_finish) mapping_complete_capture();
 		return;
 	}
 

@@ -3,8 +3,9 @@
 
 Run: python3 tests/input_remap_regression.py [--cxx g++]
 Use --source-ref COMMIT to demonstrate failures against local Git history.
-The real initialization, finish/clear functions, keyboard normalization,
-device binding, OSD-combo handling and type-3 event branch are copied intact.
+The real initialization, finish/clear functions, per-phase press ownership,
+keyboard normalization, device binding, OSD-combo handling and type-3 event
+branch are copied intact.
 Device discovery, clocks, core output and persistence use host fixtures.
 """
 import argparse
