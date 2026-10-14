@@ -1813,6 +1813,17 @@ int get_map_dev()
 	return mapping_dev;
 }
 
+void get_map_source_name(char *dest, size_t size)
+{
+	if (!dest || !size) return;
+	dest[0] = 0;
+	if (mapping_dev < 0 || mapping_dev >= NUMDEV) return;
+
+	const devInput *source = &input[mapping_dev];
+	if (source->name[0]) snprintf(dest, size, "%.*s", (int)sizeof(source->name), source->name);
+	else snprintf(dest, size, "Device %04x:%04x", source->vid, source->pid);
+}
+
 
 int get_map_cancel()
 {
@@ -3234,6 +3245,9 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 
 	if (mapping && mapping_type == 3 && ev->type == EV_KEY)
 	{
+		// A pending opener release/repeat must not select the remap source.
+		if (mapping_dev < 0 && ev->value != 1) return;
+
 		bool jkm_can_intr = mapping_count == 3 && mapping_button <= 1 && mapping_set == 1;
 		if (mapping_dev < 0) mapping_dev = dev;
 		if (ev->value == 1 && ev->code == KEY_ENTER) map_skip = 1;

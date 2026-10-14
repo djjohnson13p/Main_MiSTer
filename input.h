@@ -113,6 +113,8 @@ void finish_map_setting(int dismiss);
 uint16_t get_map_vid();
 uint16_t get_map_pid();
 int get_map_dev();
+// Cached source label; empty when no valid mapping device has been selected.
+void get_map_source_name(char *dest, size_t size);
 advancedButtonMap *get_map_code_store();
 int get_map_advance();
 int get_map_count();

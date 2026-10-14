@@ -35,7 +35,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "osd.h"
 #include "offload.h"
 
-const char *version = "$VER:" VDATE "-x2";
+const char *version = "$VER:" VDATE "-x3";
 
 int main(int argc, char *argv[])
 {

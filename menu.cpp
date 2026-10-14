@@ -1113,6 +1113,17 @@ static void *close_pipe_async(void *arg)
 	return NULL;
 }
 
+static bool menu_show_map_source()
+{
+	char name[129];
+	get_map_source_name(name, sizeof(name));
+	char line[30];
+	if (name[0]) snprintf(line, sizeof(line), " Source: %.20s", name);
+	else snprintf(line, sizeof(line), " No device: press button/key");
+	OsdWrite(0, line, 0, 0);
+	return name[0] != 0;
+}
+
 static void menu_format_datetime(char *dest, size_t size, const struct tm *timeinfo)
 {
 	size_t length = strftime(dest, size, cfg.osd_clock_12h ? "%b %d %I:%M:%S %p" : "%b %d %a%H:%M:%S", timeinfo);
@@ -4427,6 +4438,7 @@ void HandleUI(void)
 
 		OsdSetTitle("Button/Key remap", 0);
 		for (int i = 0; i < 5; i++) OsdWrite(i, "", 0, 0);
+		menu_show_map_source();
 		OsdWrite(5, info_top, 0, 0);
 		infowrite(6, "Supported mapping:");
 		infowrite( 7, "");
@@ -4436,12 +4448,12 @@ void HandleUI(void)
 		if (abm_edit_map.input_codes[0] && abm_edit_map.input_codes[0] <= 256)
 		{
 			infowrite(11, "    F12 \x16 Advanced ");
-			infowrite(12, "  Esc \x16 Clear ");
+			infowrite(12, " Esc \x16 Clear remaps ");
 			infowrite(13, "Enter \x16 Finish ");
 		} else {
 	    infowrite(11, "     OK-hold \x16 Advanced  ");
 		  infowrite(12, "     Menu \x16 Finish ");
-		  infowrite(13, "Menu-hold \x16 Clear  ");
+		  infowrite(13, "Menu-hold \x16 Clear remaps");
 		}
 		OsdWrite(14, info_bottom, 0, 0);
 		OsdWrite(OsdGetSize() - 1, "           Cancel", menusub == 0, 0);
@@ -4452,11 +4464,14 @@ void HandleUI(void)
 			{
 				int map_clear = get_map_cancel();
 				abm_dev_num = get_map_dev();
+				const bool has_source = menu_show_map_source();
 
 				if (get_map_finish() || map_clear)
 				{
+					const char *status = "          Finishing";
+					if (map_clear) status = has_source ? "   Clearing source remaps" : "      No device chosen";
 					OsdWrite(1);
-					OsdWrite(2,  (map_clear) ? "          Clearing" : "          Finishing");
+					OsdWrite(2, status);
 					OsdWrite(3);
 					OsdWrite(OsdGetSize() - 1);
 					OsdUpdate();
