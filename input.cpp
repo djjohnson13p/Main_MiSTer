@@ -3436,7 +3436,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 			}
 		}
 
-		if (map_skip) mapping_current_key = 0;
+		if (map_skip && mapping_type == 2) mapping_current_key = 0;
 
 		if (ev->type == EV_KEY && mapping_button>=0 && !osd_event)
 		{
@@ -3691,10 +3691,13 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 			{
 				if (map_skip == 2 || ev->value == 1)
 				{
+					mapping_current_key = 0;
+					mapping_current_dev = -1;
+					key_mapped = 0;
 					if (mapping_dev >= 0)
 					{
 						if (idx) input[mapping_dev].map[idx] = 0;
-						else if (mapping_button > 0)
+						else if (mapping_button >= 0)
 						{
 							if (!is_menu()) input[mapping_dev].map[mapping_button] &= mapping_set ? 0x0000FFFF : 0xFFFF0000;
 						}
