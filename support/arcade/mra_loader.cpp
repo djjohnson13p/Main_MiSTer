@@ -1345,7 +1345,9 @@ static int scan_mgl(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const in
 		{
 			if (!strcasecmp(node->tag, "file"))
 			{
+				mgl.item[mgl.count] = {};
 				mgl.item[mgl.count].action = MGL_ACTION_LOAD;
+				bool invalid_path = false;
 
 				for (int i = 0; i < node->n_attributes; i++)
 				{
@@ -1374,14 +1376,22 @@ static int scan_mgl(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const in
 					}
 					else if (!strcasecmp(node->attributes[i].name, "path"))
 					{
-						snprintf(mgl.item[mgl.count].path, sizeof(mgl.item[mgl.count].path), "%s", node->attributes[i].value);
-						mgl.item[mgl.count].valid |= 0x8;
+						if (strlen(node->attributes[i].value) < sizeof(mgl.item[mgl.count].path))
+						{
+							snprintf(mgl.item[mgl.count].path, sizeof(mgl.item[mgl.count].path), "%s", node->attributes[i].value);
+							mgl.item[mgl.count].valid |= 0x8;
+						}
+						else
+						{
+							printf("MGL file path does not fit; skipping action.\n");
+							invalid_path = true;
+						}
 					}
 				}
 
 				printf("  action=load\n  delay=%d\n  type=%c\n  index=%d\n  path=%s\n  valid=%X\n\n", mgl.item[mgl.count].delay, mgl.item[mgl.count].type, mgl.item[mgl.count].index, mgl.item[mgl.count].path, mgl.item[mgl.count].valid);
 
-				if (mgl.item[mgl.count].valid == 0xF)
+				if (mgl.item[mgl.count].valid == 0xF && !invalid_path)
 				{
 					mgl.item[mgl.count].valid = 1;
 					mgl.count++;
@@ -1393,6 +1403,7 @@ static int scan_mgl(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const in
 			}
 			else if (!strcasecmp(node->tag, "reset"))
 			{
+				mgl.item[mgl.count] = {};
 				mgl.item[mgl.count].action = MGL_ACTION_RESET;
 
 				for (int i = 0; i < node->n_attributes; i++)
