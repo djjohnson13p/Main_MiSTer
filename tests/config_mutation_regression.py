@@ -122,7 +122,8 @@ def generate(source):
     if not checked:
         production += "#undef strcat\n"
     selector = definition(arcade, "int arcade_send_rom(", "support/arcade/mra_loader.cpp")
-    prefix = selector[selector.index("{") + 1:selector.index("\n\tsnprintf(nvram_name")]
+    nvram_start = "\n\tarcade_nvm_reset();" if "\n\tarcade_nvm_reset();" in selector else "\n\tsnprintf(nvram_name"
+    prefix = selector[selector.index("{") + 1:selector.index(nvram_start)]
     production += "static void select_arcade_dip_name(const char *xml) {\n" + prefix + "\n}\n"
     return types, production, checked
 

@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <new>
 #include <string>
 
@@ -64,55 +65,212 @@ static sw_struct switches = {};
 
 static int  nvram_idx  = 0;
 static int  nvram_size = 0;
-static char nvram_name[200] = {};
+static char nvram_name[261] = {};
+static char nvram_path[2100] = {};
+static bool nvram_path_ready = false;
+static bool nvram_ready = false;
+static bool nvram_failed = false;
+
+struct nvram_pending_struct {
+	size_t depth;
+	bool applicable;
+	bool index_valid;
+	bool size_valid;
+	int index;
+	int size;
+};
+static nvram_pending_struct nvram_pending = {};
+
+static int arcade_nvm_name(const char *name, char *out, size_t capacity)
+{
+	if (!name || !out || !capacity || !*name || strchr(name, '/'))
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	size_t length = strlen(name);
+	if (length >= sizeof(nvram_name) || length >= capacity)
+	{
+		errno = ENAMETOOLONG;
+		return 0;
+	}
+	char leaf[sizeof(nvram_name)];
+	memcpy(leaf, name, length + 1);
+	if (length >= 4 && !strcasecmp(leaf + length - 4, ".mra"))
+	{
+		memcpy(leaf + length - 4, ".nvm", 5);
+	}
+	memcpy(out, leaf, length + 1);
+	return 1;
+}
+
+static int arcade_nvm_target(const char *root, const char *name, char *out, size_t capacity)
+{
+	if (!root || root[0] != '/')
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	char leaf[sizeof(nvram_name)];
+	if (!arcade_nvm_name(name, leaf, sizeof(leaf))) return 0;
+	char relative[sizeof(CONFIG_DIR"/nvram/") + sizeof(leaf) - 1] = CONFIG_DIR"/nvram/";
+	memcpy(relative + sizeof(CONFIG_DIR"/nvram/") - 1, leaf, strlen(leaf) + 1);
+	return FileResolveFullPath(root, relative, out, capacity);
+}
+
+static int arcade_nvm_number(const char *text, unsigned long maximum, int *out)
+{
+	if (!text || !out)
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	while (isspace((unsigned char)*text)) text++;
+	if (!*text || *text == '-')
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	char *end;
+	errno = 0;
+	unsigned long value = strtoul(text, &end, 0);
+	if (errno == ERANGE || value > maximum || value > INT_MAX)
+	{
+		errno = ERANGE;
+		return 0;
+	}
+	if (end == text)
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	while (isspace((unsigned char)*end)) end++;
+	if (*end)
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	*out = (int)value;
+	return 1;
+}
+
+static void arcade_nvm_retire()
+{
+	nvram_ready = false;
+	nvram_idx = 0;
+	nvram_size = 0;
+}
+
+static void arcade_nvm_reset()
+{
+	arcade_nvm_retire();
+	nvram_name[0] = 0;
+	nvram_path[0] = 0;
+	nvram_path_ready = false;
+	nvram_failed = false;
+	nvram_pending = {};
+}
+
+static void arcade_nvm_fail()
+{
+	arcade_nvm_retire();
+	nvram_failed = true;
+	nvram_pending = {};
+}
+
+static void arcade_nvm_start(bool applicable)
+{
+	if (nvram_pending.depth)
+	{
+		if (nvram_pending.applicable || applicable) arcade_nvm_retire();
+		nvram_pending.applicable = false;
+		if (nvram_pending.depth == SIZE_MAX) arcade_nvm_fail();
+		else nvram_pending.depth++;
+		return;
+	}
+	nvram_pending = {};
+	nvram_pending.depth = 1;
+	nvram_pending.applicable = applicable && !nvram_failed;
+	if (nvram_pending.applicable) arcade_nvm_retire();
+}
 
 void arcade_nvm_save()
 {
-	if(nvram_idx && nvram_size)
+	if (nvram_ready)
 	{
-		char path[256] = CONFIG_DIR"/nvram/";
-		FileCreatePath(path);
-		strcat(path, nvram_name);
+		char path[sizeof(nvram_path)];
+		memcpy(path, nvram_path, strlen(nvram_path) + 1);
+		const unsigned char index = (unsigned char)nvram_idx;
+		const int size = nvram_size;
+		char directory[sizeof(nvram_path)];
+		memcpy(directory, path, strlen(path) + 1);
+		char *slash = strrchr(directory, '/');
+		if (!slash || directory[0] != '/') return;
+		*slash = 0;
 
-		uint8_t *buf = new uint8_t[nvram_size];
+		uint8_t *buf = new (std::nothrow) uint8_t[size];
 		if (buf)
 		{
-			printf("Request for nvram (idx=%d, size=%d) data\n", nvram_idx, nvram_size);
+			FileCreatePath(directory);
+			printf("Request for nvram (idx=%d, size=%d) data\n", index, size);
 
-			user_io_set_index(nvram_idx);
+			user_io_set_index(index);
 			user_io_set_upload(1);
-			user_io_file_rx_data(buf, nvram_size);
+			user_io_file_rx_data(buf, size);
 			user_io_set_upload(0);
 
-			FileSave(path, buf, nvram_size);
+			FileSave(path, buf, size);
 			delete [] buf;
 		}
+		else errno = ENOMEM;
 	}
 }
 
 static void arcade_nvm_load()
 {
-	if (nvram_idx && nvram_size)
+	if (nvram_ready)
 	{
-		char path[256] = "nvram/";
-		uint8_t *buf = new uint8_t[nvram_size];
+		char path[sizeof(nvram_path)];
+		memcpy(path, nvram_path, strlen(nvram_path) + 1);
+		const unsigned char index = (unsigned char)nvram_idx;
+		const int size = nvram_size;
+		uint8_t *buf = new (std::nothrow) uint8_t[size];
 		if (buf)
 		{
-			memset(buf, 0, nvram_size);
+			memset(buf, 0, size);
 
-			strcat(path, nvram_name);
-			if (FileLoadConfig(path, buf, nvram_size))
+			if (FileLoad(path, buf, size) > 0)
 			{
-				printf("Sending nvram (idx=%d, size=%d) to core\n", nvram_idx, nvram_size);
-				user_io_set_index(nvram_idx);
+				printf("Sending nvram (idx=%d, size=%d) to core\n", index, size);
+				user_io_set_index(index);
 				user_io_set_download(1);
-				user_io_file_tx_data(buf, nvram_size);
+				user_io_file_tx_data(buf, size);
 				user_io_set_download(0);
 			}
 
 			delete [] buf;
 		}
+		else errno = ENOMEM;
 	}
+}
+
+static void arcade_nvm_close(bool applicable)
+{
+	if (!nvram_pending.depth)
+	{
+		if (applicable) arcade_nvm_retire();
+		return;
+	}
+	if (--nvram_pending.depth) return;
+	if (nvram_pending.applicable && !nvram_failed && nvram_path_ready &&
+		nvram_pending.index_valid && nvram_pending.size_valid)
+	{
+		nvram_idx = nvram_pending.index;
+		nvram_size = nvram_pending.size;
+		nvram_ready = nvram_idx && nvram_size;
+		arcade_nvm_load();
+	}
+	nvram_pending = {};
 }
 
 sw_struct *arcade_sw()
@@ -477,6 +635,9 @@ static int xml_send_rom(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, cons
 	switch (evt)
 	{
 	case XML_EVENT_START_DOC:
+		arcade_nvm_retire();
+		nvram_pending = {};
+		nvram_failed = false;
 		message[0] = 0;
 		arc_info->insiderom = 0;
 		arc_info->insidesw = 0;
@@ -545,6 +706,11 @@ static int xml_send_rom(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, cons
 		}
 
 		//printf("XML_EVENT_START_NODE: tag [%s]\n",node->tag);
+		if (!strcasecmp(node->tag, "nvram") &&
+			(node->tag_type == TAG_FATHER || node->tag_type == TAG_SELF))
+		{
+			arcade_nvm_start(!arc_info->insiderom && !arc_info->insidesw && !arc_info->insidecheats);
+		}
 		// walk the attributes and save them in the data structure as appropriate
 		for (int i = 0; i < node->n_attributes; i++)
 		{
@@ -730,14 +896,18 @@ static int xml_send_rom(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, cons
 			}
 			else
 			{
-				if (!strcasecmp(node->attributes[i].name, "index") && !strcasecmp(node->tag, "nvram"))
+				if (!strcasecmp(node->tag, "nvram") &&
+					(node->tag_type == TAG_FATHER || node->tag_type == TAG_SELF) && nvram_pending.applicable &&
+					nvram_pending.depth == 1 && !nvram_failed)
 				{
-					nvram_idx = strtoul(node->attributes[i].value, NULL, 0);
-				}
-
-				if (!strcasecmp(node->attributes[i].name, "size") && !strcasecmp(node->tag, "nvram"))
-				{
-					nvram_size = strtoul(node->attributes[i].value, NULL, 0);
+					if (!strcasecmp(node->attributes[i].name, "index"))
+					{
+						nvram_pending.index_valid = arcade_nvm_number(node->attributes[i].value, 255, &nvram_pending.index);
+					}
+					if (!strcasecmp(node->attributes[i].name, "size"))
+					{
+						nvram_pending.size_valid = arcade_nvm_number(node->attributes[i].value, INT_MAX, &nvram_pending.size);
+					}
 				}
 
 				if (!strcasecmp(node->tag, "cheats"))
@@ -988,7 +1158,11 @@ static int xml_send_rom(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, cons
 			if (sw->dip_num < 63) sw->dip_num++;
 		}
 
-		if (!strcasecmp(node->tag, "nvram")) arcade_nvm_load();
+		if (!strcasecmp(node->tag, "nvram") &&
+			(node->tag_type == TAG_END || node->tag_type == TAG_SELF))
+		{
+			arcade_nvm_close(!arc_info->insiderom && !arc_info->insidesw && !arc_info->insidecheats);
+		}
 
 		if (!strcasecmp(node->tag, "switches"))
 		{
@@ -1021,8 +1195,12 @@ static int xml_send_rom(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, cons
 		break;
 
 	case XML_EVENT_ERROR:
+		arcade_nvm_fail();
 		printf("XML parse: %s: ERROR %d\n", text, n);
 		snprintf(arc_info->error_msg, kBigTextSize, "XML parse: %s: ERROR %d\n", text, n);
+		break;
+	case XML_EVENT_END_DOC:
+		if (nvram_pending.depth) arcade_nvm_fail();
 		break;
 	default:
 		break;
@@ -1166,9 +1344,12 @@ int arcade_send_rom(const char *xml)
 	char *ext = strcasestr(switches.name, ".mra");
 	if (ext) strcpy(ext, ".dip");
 
-	snprintf(nvram_name, sizeof(nvram_name), p);
-	ext = strcasestr(nvram_name, ".mra");
-	if (ext) strcpy(ext, ".nvm");
+	arcade_nvm_reset();
+	if (arcade_nvm_name(p, nvram_name, sizeof(nvram_name)))
+	{
+		const char *root = getRootDir();
+		nvram_path_ready = arcade_nvm_target(root, nvram_name, nvram_path, sizeof(nvram_path));
+	}
 
 	SAX_Callbacks sax;
 	SAX_Callbacks_init(&sax);
@@ -1187,7 +1368,7 @@ int arcade_send_rom(const char *xml)
 	ProgressMessage(0, 0, 0, 0);
 
 	// parse
-	XMLDoc_parse_file_SAX(xml, &sax, &arc_info);
+	if (!XMLDoc_parse_file_SAX(xml, &sax, &arc_info)) arcade_nvm_fail();
 	if (arc_info.validrom0 == 0 && strlen(arc_info.error_msg))
 	{
 		strcpy(arcade_error_msg, arc_info.error_msg);
