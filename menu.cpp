@@ -45,6 +45,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <bluetooth.h>
 #include <hci.h>
 #include <hci_lib.h>
+#include <string>
 
 #include "file_io.h"
 #include "osd.h"
@@ -1111,6 +1112,49 @@ static void *close_pipe_async(void *arg)
 {
 	pclose((FILE *)arg);
 	return NULL;
+}
+
+static std::string menu_shell_quote(const std::string &value)
+{
+	std::string quoted = "'";
+	for (char ch : value)
+	{
+		if (ch == '\'') quoted += "'\\''";
+		else quoted += ch;
+	}
+	quoted += '\'';
+	return quoted;
+}
+
+static std::string menu_document_script(const std::string &path)
+{
+	// Derive dirname without shell expansion or command substitution, which
+	// would also remove trailing newlines from a valid directory name.
+	std::string directory = path;
+	size_t end = directory.find_last_not_of('/');
+	if (directory.empty()) directory = ".";
+	else if (end == std::string::npos) directory = "/";
+	else
+	{
+		directory.resize(end + 1);
+		size_t slash = directory.find_last_of('/');
+		directory = slash == std::string::npos ? "." : directory.substr(0, slash);
+		if (directory.empty()) directory = "/";
+		while (directory.size() > 1 && directory.back() == '/') directory.pop_back();
+	}
+
+	size_t slash = path.find_last_of('/');
+	size_t dot = path.find_last_of('.');
+	std::string extension = dot != std::string::npos && (slash == std::string::npos || dot > slash) ? path.substr(dot) : "";
+	std::string file = menu_shell_quote(path);
+	std::string command = "/media/fat/linux/pdfviewer --cache_size=1";
+	if (!strcasecmp(extension.c_str(), ".pdf")) command = "/media/fat/linux/pdfviewer --zoom_to_fit --cache_size=1 " + file;
+	else if (!strcasecmp(extension.c_str(), ".txt")) command = "less " + file;
+	else if (!strcasecmp(extension.c_str(), ".md")) command = "/media/fat/linux/glow --style dark  " + file + " | less -R";
+
+	return "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\nexport LESSKEY=/media/fat/linux/lesskey\n cd -- "
+		+ menu_shell_quote(directory) + "\n" + command
+		+ " \nEXITSTATUS=$? \necho \"Press any key to continue\"\nexit $EXITSTATUS\n";
 }
 
 static bool menu_show_map_source()
@@ -3427,30 +3471,16 @@ void HandleUI(void)
 		if (cfg.fb_terminal)
 		{
 			memcpy(Selected_tmp, selPath, sizeof(Selected_tmp));
-			static char cmd[1024 * 2];
-			const char *path = getFullPath(selPath);
+			// getFullPath uses shared storage: own the path before video calls.
+			const std::string path = getFullPath(selPath);
+			std::string cmd = menu_document_script(path);
 			menustate = MENU_DOC_FILE_SELECTED_2;
 			video_chvt(2);
 			video_fb_enable(1);
 			vga_nag();
-			// check file type
-			const char *ext = "";
-                        if (strlen(path) > 4) ext = path + strlen(path) - 4;
-			static char binary[1024*2];
-			printf("extension: [%s]\n",ext);
-			strcpy(binary,"/media/fat/linux/pdfviewer --cache_size=1");
-			if (!strcasecmp(ext,".pdf")) {
-				sprintf(binary,"/media/fat/linux/pdfviewer --zoom_to_fit --cache_size=1 \"%s\"",path);
-			} else if (!strcasecmp(ext,".txt")) {
-				sprintf(binary,"less \"%s\"",path);
-			} else if (!strcasecmp(ext+1,".md")) {
-				sprintf(binary,"/media/fat/linux/glow --style dark  \"%s\" | less -R",path);
-			}
-
-			sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\nexport LESSKEY=/media/fat/linux/lesskey\n cd $(dirname \"%s\")\n%s \nEXITSTATUS=$? \necho \"Press any key to continue\"\nexit $EXITSTATUS\n", path, binary  );
-			printf("CMD [%s]\n",cmd);
+			printf("CMD [%s]\n",cmd.c_str());
 			unlink("/tmp/script");
-			FileSave("/tmp/script", cmd, strlen(cmd));
+			FileSave("/tmp/script", &cmd[0], static_cast<int>(cmd.size()));
 			ttypid = fork();
 			ttystatus = 0;
 			if (!ttypid)
