@@ -634,7 +634,8 @@ static uint32_t menu_key_get(void)
 		{
 			longpress_consumed = 1;
 			if (menustate == MENU_SCRIPTS1) c = KEY_BACKSPACE;
-			else if(menustate < MENU_PROHIB_BTPAIR1 || menustate > MENU_PROHIB_BTPAIR2) menustate = MENU_BTPAIR;
+			else if ((menustate < MENU_PROHIB_BTPAIR1 || menustate > MENU_PROHIB_BTPAIR2)
+				&& menustate != MENU_ADVANCED_MAP_CAPTURE1) menustate = MENU_BTPAIR;
 		}
 
 		if (!but && last_but && !longpress_consumed) c = KEY_F12 | UPSTROKE;
