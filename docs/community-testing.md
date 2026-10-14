@@ -1,12 +1,12 @@
 # Experimental MiSTer Main testing
 
-The `-x5` build changes MiSTer Main, the ARM application. It preserves official FPGA cores and Linux. The fork includes AI-assisted development and is not an official MiSTer-devel release. Compilation and host regressions do not establish hardware compatibility.
+The `-x6` build changes MiSTer Main, the ARM application. It preserves official FPGA cores and Linux. The fork includes AI-assisted development and is not an official MiSTer-devel release. Compilation and host regressions do not establish hardware compatibility.
 
 ## Prepare a recoverable test
 
 Use a spare, working MiSTer card with the same official baseline you normally use. Keep your original card, working Main binary and configuration available so you can recover without relying on a network connection. Verify the candidate's SHA256 against its supplied manifest and record `SOURCE_COMMIT.txt`. Do not copy the example MiSTer.ini over your configured file.
 
-Install only the candidate Main executable using the normal Main replacement procedure for your setup. Keep its accompanying source archive and license. Confirm the version includes `-x5` in the System Settings page before testing. No deployment or card writes are performed by the fork's CI.
+Install only the candidate Main executable using the normal Main replacement procedure for your setup. Keep its accompanying source archive and license. Confirm the version includes `-x6` in the System Settings page before testing. No deployment or card writes are performed by the fork's CI.
 
 ## Record results
 
@@ -19,6 +19,7 @@ Record the exact source commit, board model, Linux version, core versions, displ
 | Clock option | With `osd_clock_12h=1`, the footer shows a 12-hour time with AM/PM in place of the weekday. Check midnight and noon using the system's existing time controls. |
 | File browser | Navigate ordinary folders and ZIP archives, including implicit ZIP folders without explicit directory entries. Parent entries, mixed directory/ZIP ordering and case-insensitive matching remain usable. |
 | Long ZIP container paths | Place a synthetic test archive under nested folders so the full container path reaches 256 characters. Enter and revisit its folders repeatedly; filenames and contents must remain correct. Use only disposable test data. |
+| MGL ZIP fallback | On the spare card, test an MGL F path with its raw file present and a same-stem ZIP: the raw file must win. Remove the test raw file and use a ZIP with one same-extension member having a different name, then repeat with nested folders and a README. The game must load and logs/docs/saves must use the inner name as with manual ZIP selection. Two compatible members must require an explicit `zip/member` path. Check missing/malformed archives, NOZIP formats and an S disk mount retain their behavior. Record member-based save names; existing raw-name saves are not migrated. |
 | Expanded-name paging | With `lookahead=0` and `browse_expand=1`, create 18 short-named test files and make the 17th sorted filename longer than 28 characters. On an eight-row browser, page forward and backward: every file must appear, especially the 10th sorted file. Repeat with lookahead enabled, 16 rows, directories and hidden datecodes. Single-item scrolling and selection must work. |
 | Info popups | Compare the same repeatable Info popup sequence with official Main on ordinary HDMI. Record observed pauses or measured timing without inferring speed from host request counts. Repeat on Direct Video and Minimig RTG; confirm attached equipment still receives changing OSD metadata. Mark combinations without suitable equipment as untested. |
 | Remap source choice | On the spare card, use keyboard Enter to open Button/Key remap, hold it until the dialog appears, then release it. The dialog must still ask for a source. Press the intended gamepad button, release it, and choose a keyboard output. The displayed source and saved mapping must belong to that gamepad. Repeat with another opener device, chords, and ordinary button definition. |
@@ -35,4 +36,4 @@ Restore your known-working Main or switch back to the original card, and verify 
 
 ## Scope of this candidate
 
-The changes restore VRR packet programming after HDMI reset, anchor inferred ZIP folder paths, correct duplicate parent entry comparisons, add an optional 12-hour clock, preserve rows when paging onto an expanded filename, skip unchanged ordinary-HDMI SPD writes during menu transitions, correct/display the remap source, match remap releases to accepted presses, and preserve complete long ZIP container names in the cache. No measured gameplay speedup, Linux driver repair, new FPGA feature or general stability guarantee is claimed. Performance work will require baseline measurements on actual hardware.
+The changes restore VRR packet programming after HDMI reset, anchor inferred ZIP folder paths, correct duplicate parent entry comparisons, add an optional 12-hour clock, preserve rows when paging onto an expanded filename, skip unchanged ordinary-HDMI SPD writes during menu transitions, correct/display the remap source, match remap releases to accepted presses, preserve complete long ZIP container names in the cache, and resolve eligible missing MGL F files through sibling ZIPs. No measured gameplay speedup, Linux driver repair, new FPGA feature or general stability guarantee is claimed. Performance work will require baseline measurements on actual hardware.

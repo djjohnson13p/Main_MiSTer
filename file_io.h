@@ -103,6 +103,22 @@ int FileCanWrite(const char *name);
 int PathIsDir(const char *name, int use_zip = 1);
 struct stat64* getPathStat(const char *path);
 
+enum MglZipFallbackResult
+{
+	MGL_ZIP_UNCHANGED,
+	MGL_ZIP_RESOLVED,
+	MGL_ZIP_NO_CANDIDATE,
+	MGL_ZIP_UNSUPPORTED,
+	MGL_ZIP_AMBIGUOUS,
+	MGL_ZIP_INVALID_ARCHIVE,
+	MGL_ZIP_INVALID_PATH,
+	MGL_ZIP_PATH_TOO_LONG
+};
+
+// Resolve an absent absolute MGL ROM path to one compatible sibling-ZIP member.
+// Only RESOLVED changes path; capacity includes the terminating NUL.
+MglZipFallbackResult FileResolveMglZipFallback(char *path, size_t capacity);
+
 #define SAVE_DIR "saves"
 void FileGenerateSavePath(const char *name, char* out_name, int ext_replace = 1);
 

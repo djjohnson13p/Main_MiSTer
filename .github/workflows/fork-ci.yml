@@ -25,6 +25,7 @@ jobs:
           python3 -m unittest discover -s tests -p upstream_review_tests.py -v
           python3 tests/menu_clock_regression.py
           python3 tests/file_browser_tests.py
+          python3 tests/mgl_zip_regression.py
           python3 tests/file_pagination_regression.py
           python3 tests/video_vrr_regression.py
           python3 tests/video_spd_regression.py

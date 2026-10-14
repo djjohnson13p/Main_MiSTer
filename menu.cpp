@@ -2664,8 +2664,34 @@ void HandleUI(void)
 		{
 			if (!mgl->done)
 			{
-				if(mgl->item[mgl->current].path[0] == '/') snprintf(selPath, sizeof(selPath), "%s", mgl->item[mgl->current].path);
-				else snprintf(selPath, sizeof(selPath), "%s/%s", HomeDir(), mgl->item[mgl->current].path);
+				const mgl_item_struct &item = mgl->item[mgl->current];
+				int path_length = item.path[0] == '/'
+					? snprintf(selPath, sizeof(selPath), "%s", item.path)
+					: snprintf(selPath, sizeof(selPath), "%s/%s", HomeDir(), item.path);
+				if (path_length < 0 || (size_t)path_length >= sizeof(selPath))
+				{
+					printf("MGL file path does not fit; skipping action.\n");
+					selPath[0] = 0;
+					menustate = MENU_NONE1;
+					mgl->state = 3;
+					break;
+				}
+
+				if (item.action == MGL_ACTION_LOAD && item.type == 'F'
+					&& !(fs_Options & (SCANO_NOZIP | SCANO_NEOGEO)))
+				{
+					const char *reason = nullptr;
+					switch (FileResolveMglZipFallback(selPath, sizeof(selPath)))
+					{
+					case MGL_ZIP_UNSUPPORTED: reason = "unsupported member"; break;
+					case MGL_ZIP_AMBIGUOUS: reason = "multiple compatible members"; break;
+					case MGL_ZIP_INVALID_ARCHIVE: reason = "invalid archive"; break;
+					case MGL_ZIP_INVALID_PATH: reason = "invalid path"; break;
+					case MGL_ZIP_PATH_TOO_LONG: reason = "member path does not fit"; break;
+					default: break;
+					}
+					if (reason) printf("MGL ZIP fallback unavailable (%s): %s\n", reason, selPath);
+				}
 
 				// Update /tmp/ files to reflect the actual file being loaded by MGL
 				if (cfg.log_file_entry)

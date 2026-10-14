@@ -904,6 +904,108 @@ int PathIsDir(const char *name, int use_zip)
 	return isPathDirectory(name, use_zip);
 }
 
+MglZipFallbackResult FileResolveMglZipFallback(char *path, size_t capacity)
+{
+	if (!path || !capacity || strnlen(path, capacity) == capacity || path[0] != '/')
+		return MGL_ZIP_INVALID_PATH;
+	if (strlen(path) >= sizeof(full_path)) return MGL_ZIP_PATH_TOO_LONG;
+
+	// Keep existing literal files/directories and current explicit ZIP semantics.
+	if (FileExists(path, 0) || PathIsDir(path, 0) || strcasestr(path, ".zip"))
+		return MGL_ZIP_UNCHANGED;
+
+	const char *basename = strrchr(path, '/') + 1;
+	const char *extension = strrchr(basename, '.');
+	if (!extension || extension == basename || !extension[1]) return MGL_ZIP_UNCHANGED;
+
+	std::string archive_path(path, extension - path);
+	archive_path += ".zip";
+	if (archive_path.size() >= capacity || archive_path.size() >= sizeof(full_path)) return MGL_ZIP_PATH_TOO_LONG;
+	if (!FileExists(archive_path.c_str(), 0)) return MGL_ZIP_NO_CANDIDATE;
+
+	int fd = open(archive_path.c_str(), O_RDONLY | O_CLOEXEC);
+	if (fd < 0) return MGL_ZIP_INVALID_ARCHIVE;
+	FILE *cfile = fdopen(fd, "r");
+	if (!cfile)
+	{
+		close(fd);
+		return MGL_ZIP_INVALID_ARCHIVE;
+	}
+
+	mz_zip_archive archive = {};
+	MglZipFallbackResult result = MGL_ZIP_INVALID_ARCHIVE;
+	std::string candidate;
+	if (mz_zip_reader_init_cfile(&archive, cfile, 0, 0))
+	{
+		result = MGL_ZIP_NO_CANDIDATE;
+		unsigned int compatible = 0;
+		bool unsupported = false;
+		std::vector<char> filename;
+		for (unsigned int i = 0; i < mz_zip_reader_get_num_files(&archive); ++i)
+		{
+			mz_zip_archive_file_stat stat;
+			if (!mz_zip_reader_file_stat(&archive, i, &stat))
+			{
+				result = MGL_ZIP_INVALID_ARCHIVE;
+				break;
+			}
+			if (stat.m_is_directory) continue;
+
+			// stat.m_filename is limited to 512 bytes. Get the complete ZIP name.
+			mz_uint required = mz_zip_reader_get_filename(&archive, i, nullptr, 0);
+			if (!required || required > 65536)
+			{
+				result = MGL_ZIP_INVALID_ARCHIVE;
+				break;
+			}
+			filename.resize(required);
+			if (mz_zip_reader_get_filename(&archive, i, filename.data(), required) != required
+				|| strlen(filename.data()) + 1 != required)
+			{
+				result = MGL_ZIP_INVALID_ARCHIVE;
+				break;
+			}
+			const char *member = filename.data();
+			const char *member_base = strrchr(member, '/');
+			member_base = member_base ? member_base + 1 : member;
+			const char *member_ext = strrchr(member_base, '.');
+			if (!member_ext || strcasecmp(member_ext, extension)) continue;
+			if (stat.m_is_encrypted || !stat.m_is_supported)
+			{
+				unsupported = true;
+				continue;
+			}
+			if (++compatible > 1)
+			{
+				result = MGL_ZIP_AMBIGUOUS;
+				break;
+			}
+			// Preserve the browser's 255-byte basename limit and loader buffer.
+			if (strlen(member_base) >= sizeof(direntext_t::altname)
+				|| strlen(member_base) >= sizeof(fileTYPE::name)
+				|| archive_path.size() + 1 + strlen(member) >= capacity
+				|| archive_path.size() + 1 + strlen(member) >= sizeof(full_path))
+			{
+				result = MGL_ZIP_PATH_TOO_LONG;
+				continue;
+			}
+			candidate = archive_path + "/" + member;
+			result = MGL_ZIP_RESOLVED;
+		}
+		if (result == MGL_ZIP_NO_CANDIDATE && unsupported) result = MGL_ZIP_UNSUPPORTED;
+	}
+	mz_zip_reader_end(&archive);
+	fclose(cfile);
+
+	if (result == MGL_ZIP_RESOLVED)
+	{
+		fileTYPE file;
+		if (!FileOpenEx(&file, candidate.c_str(), O_RDONLY, 1, 1)) return MGL_ZIP_INVALID_ARCHIVE;
+		memcpy(path, candidate.c_str(), candidate.size() + 1);
+	}
+	return result;
+}
+
 int FileCanWrite(const char *name)
 {
 	make_fullpath(name);
