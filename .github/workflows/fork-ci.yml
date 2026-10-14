@@ -45,6 +45,7 @@ jobs:
           python3 tests/file_transfer_regression.py
           python3 tests/screenshot_owned_path_regression.py
           python3 tests/savestate_path_regression.py
+          python3 tests/ide_a2065_regression.py
       - name: Install the matching Arm toolchain
         run: |
           url=https://developer.arm.com/-/media/Files/downloads/gnu-a/10.2-2020.11/binrel

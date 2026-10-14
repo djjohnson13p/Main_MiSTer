@@ -33,3 +33,9 @@ Record the accepted official baseline in `upstream-base.txt`. CI fetches that ex
 The development objective is to preserve useful upstream improvements while adding validated fork improvements. That objective does not justify claiming compatibility or speed beyond the tests and measurements performed. CI and physical testing remain distinct evidence levels.
 
 The monitor never opens upstream PRs, issues, reviews or messages, and it never automatically installs experimental software on hardware. The user decides when to invite community testing.
+
+## Accepted integration history
+
+| Official revision | Fork candidate | Decision and evidence limits |
+| --- | --- | --- |
+| `00bdff0d5b985a3a929978f86f15d930954451a2` | `-x17` | Import all three source files unchanged and preserve the upstream parent commit. The A2065/IDE acknowledgement cycle is relevant and independent of our modified paths. Production extraction tests and matched pristine/fork builds check software behavior; upstream-reported hardware results are not this fork's hardware validation. CI baseline advances to this exact revision. |
