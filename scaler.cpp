@@ -449,6 +449,7 @@ static void print_imlib_load_error (Imlib_Load_Error err, const char *filepath) 
 // use imlib2 to save screenshot to disk. expects argb (bgra on little-endian) format.
 // imlib2 determines output format by filename extension
 // if we pass anything to output_width/height it will be scaled to that size
+// filename is already resolved and owned by the queued screenshot operation.
 bool write_screenshot(const char *filename, const uint8_t *inbuf,
                       int width, int height, int output_width, int output_height)
 {
@@ -486,7 +487,7 @@ bool write_screenshot(const char *filename, const uint8_t *inbuf,
     }
 
     Imlib_Load_Error error;
-    imlib_save_image_with_error_return(getFullPath(filename), &error);
+    imlib_save_image_with_error_return(filename, &error);
 
     if (scaled && scaled != im) {
         imlib_context_set_image(scaled);
@@ -506,18 +507,19 @@ bool write_screenshot(const char *filename, const uint8_t *inbuf,
     return true;
 }
 
-static void save_screenshot(int do_rescale, int base_width, int base_height, int scaled_width, int scaled_height, unsigned char *outputbuf, char *filename) {
+static void save_screenshot(int do_rescale, int base_width, int base_height, int scaled_width, int scaled_height, unsigned char *outputbuf, char *filename, char *save_path) {
     bool success = false;
     if (do_rescale)
     {
         printf("rescaling screenshot from %dx%d to %dx%d\n", base_width, base_height, scaled_width, scaled_height);
-        success = write_screenshot(filename, outputbuf, base_width, base_height, scaled_width, scaled_height);
+        success = write_screenshot(save_path, outputbuf, base_width, base_height, scaled_width, scaled_height);
     }
     else
     {
         printf("saving screenshot at native res %dx%d\n", base_width, base_height);
-        success = write_screenshot(filename, outputbuf, base_width, base_height);
+        success = write_screenshot(save_path, outputbuf, base_width, base_height);
     }
+    free(save_path);
 
     ScreenshotResult_atomic *result_data =
     (ScreenshotResult_atomic *)malloc(sizeof(ScreenshotResult_atomic));
@@ -551,6 +553,7 @@ void do_screenshot(char* imgname)
 		printf("problem with scaler, maybe not a new enough version\n");
 		Info("Scaler not compatible");
 		screenshot_pending_atomic = false;
+		screenshot_rescale = 0;
 		free(imgname);
 		imgname = NULL;
 		return;
@@ -571,6 +574,7 @@ void do_screenshot(char* imgname)
     
     if (needed > sizeof(screenshot_outputbuf))
     { mister_scaler_free(ms);
+		free(imgname);
 		screenshot_pending_atomic = false;
 		screenshot_rescale = 0;
 		return; 
@@ -592,11 +596,21 @@ void do_screenshot(char* imgname)
 
     mister_scaler_read(ms, screenshot_outputbuf);
     FileGenerateScreenshotName(basename, filename, extension, 1024);
+	char resolved_path[2100];
+	bool path_valid = FileResolveFullPath(getRootDir(), filename, resolved_path, sizeof(resolved_path));
 
     free(imgname);
 	imgname = NULL;
 	
     mister_scaler_free(ms);
+	if (!path_valid)
+	{
+		printf("Screenshot path resolution failed\n");
+		Info("Screenshot failed");
+		screenshot_pending_atomic = false;
+		screenshot_rescale = 0;
+		return;
+	}
 
 	if (video_get_rotated())
 	{
@@ -606,8 +620,11 @@ void do_screenshot(char* imgname)
 	}
 	
 	char* filename_copy = strdup(filename);
+	char* save_path_copy = strdup(resolved_path);
 	
-	if (!filename_copy) {
+	if (!filename_copy || !save_path_copy) {
+		free(filename_copy);
+		free(save_path_copy);
 		screenshot_pending_atomic = false;
 		screenshot_rescale = 0;
 		return;
@@ -615,7 +632,7 @@ void do_screenshot(char* imgname)
 
 	int do_rescale = screenshot_rescale;
 	offload_add_work([=]() {
-        save_screenshot(do_rescale, base_width, base_height, scaled_width, scaled_height, screenshot_outputbuf, filename_copy);
+        save_screenshot(do_rescale, base_width, base_height, scaled_width, scaled_height, screenshot_outputbuf, filename_copy, save_path_copy);
     });
 	return;
 }

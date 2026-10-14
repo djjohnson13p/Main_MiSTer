@@ -167,6 +167,9 @@ int findGameAsset(char *path,
 const char *getStorageDir(int dev);
 const char *getRootDir();
 const char *getFullPath(const char *name);
+// Pure checked resolution. Output is complete and unchanged on failure, even
+// when root/name alias output. Root is required only for relative mode != -1.
+int FileResolveFullPath(const char *root, const char *name, char *out, size_t capacity, int mode = 0);
 
 uint32_t getFileType(const char *name);
 uint64_t getFileSize(const char *name);

@@ -44,6 +44,8 @@ def generate(cpp, header):
     production = ""
     markers = ["fileTYPE::fileTYPE()", "fileTYPE::~fileTYPE()", "int fileTYPE::opened()",
                "static int FileIsZipped(", "static char* make_fullpath("]
+    if "int FileResolveFullPath(" in cpp:
+        markers.append("int FileResolveFullPath(")
     if "static int make_fullpath_checked(" in cpp:
         markers.append("static int make_fullpath_checked(")
     markers += ["int FileClose(", "static int zip_search_by_crc(", "int FileOpenZip(",
@@ -51,6 +53,8 @@ def generate(cpp, header):
                 "int FileSeek(", "int FileReadAdv(", "int FileWriteAdv("]
     for marker in markers:
         part = definition(cpp, marker, "file_io.cpp")
+        if marker == "int FileResolveFullPath(":
+            part = "#include <new>\n" + part
         if marker == "int FileSeek(":
             # The ARM off64_t printf spelling differs from some host ABIs.
             part = '#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored "-Wformat"\n' + part + '#pragma GCC diagnostic pop\n'

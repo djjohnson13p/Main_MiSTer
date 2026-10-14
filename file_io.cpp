@@ -19,6 +19,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <new>
 #include "lib/miniz/miniz.h"
 #include "osd.h"
 #include "fpga_io.h"
@@ -231,19 +232,45 @@ static char* make_fullpath(const char *path, int mode = 0)
 	return full_path;
 }
 
-// Open calls must retain the complete path, including aliased input.
-static int make_fullpath_checked(const char *path, int mode = 0)
+int FileResolveFullPath(const char *root, const char *name, char *out, size_t capacity, int mode)
 {
-	char resolved[sizeof(full_path)];
-	int length = path[0] == '/' ? snprintf(resolved, sizeof(resolved), "%s", path) :
-		snprintf(resolved, sizeof(resolved), "%s/%s", (mode == -1) ? "" : getRootDir(), path);
-	if (length < 0 || (size_t)length >= sizeof(resolved))
+	if (!name || !out || !capacity || (name[0] != '/' && mode != -1 && !root))
+	{
+		errno = EINVAL;
+		return 0;
+	}
+	bool relative = name[0] != '/';
+	size_t name_length = strlen(name);
+	size_t root_length = relative && mode != -1 ? strlen(root) : 0;
+	if (name_length >= capacity || (relative && (capacity - name_length < 2 || root_length > capacity - name_length - 2)))
 	{
 		errno = ENAMETOOLONG;
 		return 0;
 	}
-	memcpy(full_path, resolved, (size_t)length + 1);
+	try
+	{
+		// Own both inputs before publishing, including overlapping substrings.
+		std::string resolved;
+		if (relative)
+		{
+			if (root_length) resolved.assign(root, root_length);
+			resolved += '/';
+		}
+		resolved.append(name, name_length);
+		memcpy(out, resolved.c_str(), resolved.size() + 1);
+	}
+	catch (const std::bad_alloc &)
+	{
+		errno = ENOMEM;
+		return 0;
+	}
 	return 1;
+}
+
+// Open calls retain their complete-path bound and aliased-input behavior.
+static int make_fullpath_checked(const char *path, int mode = 0)
+{
+	return FileResolveFullPath((path && path[0] != '/' && mode != -1) ? getRootDir() : "", path, full_path, sizeof(full_path), mode);
 }
 
 static int get_stmode(const char *path)
