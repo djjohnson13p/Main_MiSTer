@@ -16,7 +16,15 @@
 // Only the storage root is supplied by the harness; ZIP parsing uses real miniz.
 static std::string storage_root;
 const char *getRootDir() { return storage_root.c_str(); }
+static int archive_opens = 0;
+static int counted_archive_open(const char *path, int flags)
+{
+	archive_opens++;
+	return ::open(path, flags);
+}
+#define open counted_archive_open
 #include "file_browser_production.inc"
+#undef open
 
 static int failures = 0;
 static void check(bool condition, const char *message)
@@ -133,6 +141,43 @@ static void test_zip_directory_paths()
 	last_zip_fname[0] = 0;
 }
 
+static void test_zip_cache_name()
+{
+	// Reach the old256-byte cache boundary within ordinary Windows path limits.
+	const size_t target_length = 256;
+	const std::string first = storage_root + "/" + std::string(80, 'a');
+	const std::string suffix = "/cache.zip";
+	check(first.size() + suffix.size() + 1 < target_length, "temporary root must fit the long cache fixture");
+	if (first.size() + suffix.size() + 1 >= target_length) return;
+	const std::string folder = first + "/" + std::string(target_length - first.size() - suffix.size() - 1, 'b');
+	check(!mkdir(first.c_str(), 0700) && !mkdir(folder.c_str(), 0700), "long ZIP fixture folders must be created");
+	const std::string archive_path = folder + suffix;
+	mz_zip_archive zip = {};
+	check(mz_zip_writer_init_file(&zip, archive_path.c_str(), 0), "long-path ZIP fixture must open");
+	add_zip_file(&zip, "folder/Inner.bin");
+	check(mz_zip_writer_finalize_archive(&zip) && mz_zip_writer_end(&zip), "long-path ZIP fixture must close");
+	std::vector<char> path(archive_path.begin(), archive_path.end());
+	path.push_back(0);
+	archive_opens = 0;
+	check(OpenZipfileCached(path.data(), 0), "real archive at the old cache boundary must open");
+	bool terminated = std::memchr(last_zip_fname, 0, sizeof(last_zip_fname)) != nullptr;
+	check(terminated, "cached ZIP name must have a terminator after a long container path");
+	bool complete = terminated && archive_path.size() < sizeof(last_zip_fname)
+		&& !std::strcmp(last_zip_fname, archive_path.c_str());
+	check(complete, "cached ZIP name must retain the complete container path");
+	// Avoid intentionally executing an invalid C-string comparison on old code.
+	if (complete)
+	{
+		check(OpenZipfileCached(path.data(), 0) && archive_opens == 1, "repeated long archive lookup must reuse its reader");
+		std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c; });
+		check(OpenZipfileCached(path.data(), 0) && archive_opens == 1, "cached archive comparison must retain existing case-insensitive behavior");
+	}
+	mz_zip_reader_end(&last_zip_archive);
+	if (last_zip_cfile) std::fclose(last_zip_cfile);
+	last_zip_cfile = nullptr;
+	last_zip_fname[0] = 0;
+}
+
 static void test_filesystem_directory_paths()
 {
 	const std::string folder = storage_root + "/folder";
@@ -158,6 +203,7 @@ int main(int argc, char **argv)
 	storage_root = argv[1];
 	test_ordering();
 	test_zip_directory_paths();
+	test_zip_cache_name();
 	test_filesystem_directory_paths();
 	if (failures) std::fprintf(stderr, "%d checks failed\n", failures);
 	else std::puts("file browser comparator and real ZIP path regression checks passed");

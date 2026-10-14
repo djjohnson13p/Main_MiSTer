@@ -11,6 +11,7 @@ objects, binaries, and fixtures live in a temporary directory.
 import argparse
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -48,13 +49,9 @@ def main() -> None:
     cpp = read_source("file_io.cpp")
     header = read_source("file_io.h")
     generated = definition(header, "struct direntext_t\n", "file_io.h")
-    generated += """
-static mz_zip_archive last_zip_archive = {};
-static int last_zip_fd = -1;
-static FILE *last_zip_cfile = NULL;
-static char last_zip_fname[256] = {};
-static char full_path[2100];
-"""
+    generated += "\n".join(re.findall(
+        r"^static [^\n]*\b(?:last_zip_archive|last_zip_fd|last_zip_cfile|last_zip_fname|full_path)\b[^\n]*$",
+        cpp, re.MULTILINE)) + "\n"
     for marker in (
         "static int OpenZipfileCached(",
         "static int FileIsZipped(",

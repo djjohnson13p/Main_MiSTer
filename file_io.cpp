@@ -54,17 +54,17 @@ DirNameSet DirNames;
 // ** We have to open the file outselves with open() so we can set O_CLOEXEC to prevent
 // leaking the file descriptor when the user changes cores
 
+static char full_path[2100];
 static mz_zip_archive last_zip_archive = {};
 static int last_zip_fd = -1;
 static FILE *last_zip_cfile = NULL;
-static char last_zip_fname[256] = {};
+static char last_zip_fname[sizeof(full_path)] = {};
 static char scanned_path[1024] = {};
 static int scanned_opts = 0;
 
 static int iSelectedEntry = 0;       // selected entry index
 static int iFirstEntry = 0;
 
-static char full_path[2100];
 uint8_t loadbuf[LOADBUF_SZ];
 
 static int flist_last_first_entry()
@@ -194,7 +194,7 @@ static int OpenZipfileCached(char *path, int flags)
   int mz_ret = mz_zip_reader_init_cfile(&last_zip_archive, last_zip_cfile, 0, flags);
   if (mz_ret)
   {
-    strncpy(last_zip_fname, path, sizeof(last_zip_fname));
+    snprintf(last_zip_fname, sizeof(last_zip_fname), "%s", path);
   }
   return mz_ret;
 }
