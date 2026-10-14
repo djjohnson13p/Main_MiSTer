@@ -49,6 +49,7 @@ jobs:
           python3 tests/config_mutation_regression.py
           python3 tests/arcade_nvram_regression.py
           python3 tests/arcade_xml_events_regression.py
+          python3 tests/mgl_xml_events_regression.py
       - name: Install the matching Arm toolchain
         run: |
           url=https://developer.arm.com/-/media/Files/downloads/gnu-a/10.2-2020.11/binrel

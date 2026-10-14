@@ -1555,6 +1555,12 @@ static int scan_mgl(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const in
 	(void)sd;
 
 	static int inside_mgl = 0;
+	// Special-node payloads must not enter MGL element handlers.
+	if (evt == XML_EVENT_START_NODE && node->tag_type != TAG_FATHER && node->tag_type != TAG_SELF)
+		return true;
+	if (evt == XML_EVENT_END_NODE && node->tag_type != TAG_END && node->tag_type != TAG_SELF)
+		return true;
+
 	switch (evt)
 	{
 	case XML_EVENT_START_DOC:
