@@ -56,7 +56,14 @@ void check_status_change() {}
 void user_io_write_gameid(const char *name, uint32_t)
 { gameid_calls++; gameid_name = name; }
 int process_ss(const char *name, int = 1)
-{ state_calls++; state_name = name; FileGenerateSavestatePath(name, state_path, 1); return 1; }
+{
+    state_calls++; state_name = name;
+#if HAVE_CHECKED_SAVESTATE_PATH
+    return FileGenerateSavestatePath(name, state_path, sizeof(state_path), 1);
+#else
+    FileGenerateSavestatePath(name, state_path, 1); return 1;
+#endif
+}
 int user_io_file_mount(const char *name, unsigned char index, char pre, int)
 {
     mount_calls++; mounted_path = name; last_mount_index = index;

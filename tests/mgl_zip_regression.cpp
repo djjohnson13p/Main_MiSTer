@@ -82,7 +82,11 @@ int user_io_file_tx(const char *name, unsigned char index, char save, char mute,
     file_crc = mz_crc32(0, bytes.data(), bytes.size());
     if (save) {
         FileGenerateSavePath(name, save_path, 1);
+#if HAVE_CHECKED_SAVESTATE_PATH
+        FileGenerateSavestatePath(name, state_path, sizeof(state_path), 1);
+#else
         FileGenerateSavestatePath(name, state_path, 1);
+#endif
     }
     return 1;
 }

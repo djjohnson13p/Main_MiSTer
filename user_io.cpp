@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <limits.h>
+#include <errno.h>
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -1981,22 +1982,17 @@ static void kbd_fifo_poll()
 
 int process_ss(const char *rom_name, int enable)
 {
-	static char ss_name[1024] = {};
-	static char *ss_sufx = 0;
+	static char ss_paths[4][2100] = {};
 	static uint32_t ss_cnt[4] = {};
 	static void *base[4] = {};
 	static int enabled = 0;
 
-	if (!ss_base) return 0;
-
 	if (rom_name)
 	{
-		enabled = enable;
-		if (!enabled) return 0;
-
-		uint32_t len = ss_size;
-		uint32_t map_addr = ss_base;
-		fileTYPE f = {};
+		// A rejected new binding must never keep the previous game's save target.
+		enabled = 0;
+		for (auto &path : ss_paths) path[0] = 0;
+		if (!enable || !ss_base) return 0;
 
 		// Apple-II: per-game savestates, keyed by the game disk.
 		const char *ss_media = rom_name;
@@ -2014,7 +2010,7 @@ int process_ss(const char *rom_name, int enable)
 					const char *q = sd_image[a2_ss_slot[p]].name;
 					const char *slash = strrchr(q, '/');
 					const char *base = slash ? slash + 1 : q;
-					// media name must have a dot or the handler may crash
+					// Retain the existing dotted-disk selection and core fallback.
 					if (strchr(base, '.'))
 					{
 						ss_media = base;
@@ -2024,6 +2020,52 @@ int process_ss(const char *rom_name, int enable)
 			}
 		}
 
+		char root_dir[2100];
+		const char *root = getRootDir();
+		if (!root)
+		{
+			errno = EINVAL;
+			return 0;
+		}
+		size_t root_length = strlen(root);
+		if (root_length >= sizeof(root_dir))
+		{
+			errno = ENAMETOOLONG;
+			return 0;
+		}
+		memcpy(root_dir, root, root_length + 1);
+
+		// Preserve the relative 1024-byte name bound, then own every absolute path
+		// before directory creation, shared-memory changes or file operations.
+		char relative_path[1024];
+		char legacy_path[2100];
+		char state_dir[2100];
+		char core_dir[2100];
+		for (int i = 0; i < 4; i++)
+		{
+			if (!FileGenerateSavestatePath(ss_media, relative_path, sizeof(relative_path), i + 1) ||
+				!FileResolveFullPath(root_dir, relative_path, ss_paths[i], sizeof(ss_paths[i])))
+			{
+				printf("Unable to prepare savestate path\n");
+				return 0;
+			}
+		}
+		if (!FileGenerateSavestatePath(ss_media, relative_path, sizeof(relative_path), 0) ||
+			!FileResolveFullPath(root_dir, relative_path, legacy_path, sizeof(legacy_path)) ||
+			!FileResolveFullPath(root_dir, SAVESTATE_DIR, state_dir, sizeof(state_dir)))
+		{
+			printf("Unable to prepare savestate path\n");
+			return 0;
+		}
+		size_t core_dir_length = strrchr(ss_paths[0], '/') - ss_paths[0];
+		memcpy(core_dir, ss_paths[0], core_dir_length);
+		core_dir[core_dir_length] = 0;
+		mkdir(state_dir, S_IRWXU | S_IRWXG | S_IRWXO);
+		mkdir(core_dir, S_IRWXU | S_IRWXG | S_IRWXO);
+
+		uint32_t len = ss_size;
+		uint32_t map_addr = ss_base;
+		fileTYPE f = {};
 		for (int i = 0; i < 4; i++)
 		{
 			if (!base[i]) base[i] = shmem_map(map_addr, len);
@@ -2036,15 +2078,11 @@ int process_ss(const char *rom_name, int enable)
 				ss_cnt[i] = 0xFFFFFFFF;
 				memset(base[i], 0, len);
 
+				const char *ss_name = ss_paths[i];
 				if (!i)
 				{
-					FileGenerateSavestatePath(ss_media, ss_name, 1);
 					printf("Base SavestatePath=%s\n", ss_name);
-					if (!FileExists(ss_name)) FileGenerateSavestatePath(ss_media, ss_name, 0);
-				}
-				else
-				{
-					FileGenerateSavestatePath(ss_media, ss_name, i + 1);
+					if (!FileExists(ss_name)) ss_name = legacy_path;
 				}
 
 				if (FileExists(ss_name))
@@ -2066,12 +2104,11 @@ int process_ss(const char *rom_name, int enable)
 			map_addr += len;
 		}
 
-		FileGenerateSavestatePath(ss_media, ss_name, 1);
-		ss_sufx = ss_name + strlen(ss_name) - 4;
+		enabled = 1;
 		return 1;
 	}
 
-	if (!enabled) return 0;
+	if (!ss_base || !enabled) return 0;
 
 	static unsigned long ss_timer = 0;
 	if (ss_timer && !CheckTimer(ss_timer)) return 0;
@@ -2082,20 +2119,19 @@ int process_ss(const char *rom_name, int enable)
 		if (base[i])
 		{
 			uint32_t curcnt = ((uint32_t*)(base[i]))[0];
-			uint32_t size = ((uint32_t*)(base[i]))[1];
+			uint64_t size = ((uint32_t*)(base[i]))[1];
 
 			if (curcnt != ss_cnt[i])
 			{
 				ss_cnt[i] = curcnt;
 				if (size) size = (size + 2) * 4;
-				if (size > 0 && size <= ss_size)
+				if (size > 0 && size <= ss_size && size <= INT_MAX)
 				{
 					MenuHide();
 					Info("Saving the state", 500);
 
-					*ss_sufx = i + '1';
-					int ret = FileSave(ss_name, base[i], size);
-					if (ret) printf("Wrote %d bytes to file: %s\n", ret, ss_name);
+					int ret = FileSave(ss_paths[i], base[i], (int)size);
+					if (ret) printf("Wrote %d bytes to file: %s\n", ret, ss_paths[i]);
 				}
 			}
 		}

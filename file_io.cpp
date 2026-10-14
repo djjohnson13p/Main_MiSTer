@@ -1188,30 +1188,52 @@ void FileGenerateSavePath(const char *name, char* out_name, int ext_replace)
 	printf("SavePath=%s\n", out_name);
 }
 
-void FileGenerateSavestatePath(const char *name, char* out_name, int sufx)
+int FileGenerateSavestatePath(const char *name, char *out_name, size_t capacity, int sufx)
 {
-	const char *subdir = is_arcade() ? "Arcade" : CoreName2;
-
-	create_path(SAVESTATE_DIR, subdir);
-
-	sprintf(out_name, "%s/%s/", SAVESTATE_DIR, subdir);
-	char *fname = out_name + strlen(out_name);
-
+	if (!name || !out_name || !capacity)
+	{
+		errno = EINVAL;
+		return 0;
+	}
 	const char *p = strrchr(name, '/');
-	if (p)
+	const char *fname = p ? p + 1 : name;
+	if (!fname[0])
 	{
-		strcat(fname, p + 1);
+		errno = EINVAL;
+		return 0;
 	}
-	else
+	const char *extension = strrchr(fname, '.');
+	size_t stem_length = extension ? (size_t)(extension - fname) : strlen(fname);
+	const char *subdir = is_arcade() ? "Arcade" : CoreName2;
+	char suffix[32];
+	if (sufx) snprintf(suffix, sizeof(suffix), "_%d.ss", sufx);
+	else strcpy(suffix, ".ss");
+
+	size_t remaining = capacity - 1;
+	const size_t lengths[] = { strlen(SAVESTATE_DIR), 1, strlen(subdir), 1, stem_length, strlen(suffix) };
+	for (size_t length : lengths)
 	{
-		strcat(fname, name);
+		if (length > remaining)
+		{
+			errno = ENAMETOOLONG;
+			return 0;
+		}
+		remaining -= length;
 	}
-
-	char *e = strrchr(fname, '.');
-	if (e) e[0] = 0;
-
-	if(sufx) sprintf(e, "_%d.ss", sufx);
-	else strcat(e, ".ss");
+	try
+	{
+		std::string resolved;
+		resolved.reserve(capacity - remaining - 1);
+		resolved.append(SAVESTATE_DIR).append("/").append(subdir).append("/");
+		resolved.append(fname, stem_length).append(suffix);
+		memcpy(out_name, resolved.c_str(), resolved.size() + 1);
+	}
+	catch (const std::bad_alloc &)
+	{
+		errno = ENOMEM;
+		return 0;
+	}
+	return 1;
 }
 
 uint32_t getFileType(const char *name)

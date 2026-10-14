@@ -46,6 +46,9 @@ def generate(cpp, header, user, menu, mgl_header, user_header=None):
     types += "\n".join(item.group() for item in sorted(cache, key=lambda item: item.start())) + "\n"
     types += re.search(r"^int\s+FileOpenEx\([^\n]+", header, re.MULTILINE).group() + "\n"
     types += re.search(r"^int\s+FileOpen\([^\n]+", header, re.MULTILINE).group() + "\n"
+    checked_state = "int FileGenerateSavestatePath(" in cpp
+    types += f"#define HAVE_CHECKED_SAVESTATE_PATH {int(checked_state)}\n"
+    types += re.search(r"^(?:int|void) FileGenerateSavestatePath\([^\n]+", header, re.M).group() + "\n"
     types += "\n".join(re.findall(r"^#define (?:SCANO_|SAVE_DIR|SAVESTATE_DIR)[^\n]+", header, re.MULTILINE)) + "\n"
     types += definition(mgl_header, "struct mgl_item_struct\n", "mra_loader.h")
     types += definition(mgl_header, "struct mgl_struct\n", "mra_loader.h")
@@ -71,8 +74,11 @@ def generate(cpp, header, user, menu, mgl_header, user_header=None):
         "static int get_stmode(", "static int isPathDirectory(", "static int isPathRegularFile(",
         "int FileClose(", "fileTYPE::fileTYPE()", "fileTYPE::~fileTYPE()", "int fileTYPE::opened()",
         "int FileOpenEx(", "int FileOpen(", "int FileReadAdv(", "int FileExists(", "int PathIsDir(",
-        "int FileCanWrite(", "void create_path(", "void FileGenerateSavePath(", "void FileGenerateSavestatePath(",
+        "int FileCanWrite(", "void create_path(", "void FileGenerateSavePath(",
+        ("int " if checked_state else "void ") + "FileGenerateSavestatePath(",
     ):
+        if checked_state and marker == "int FileGenerateSavestatePath(":
+            production += "#include <new>\n"
         production += definition(cpp, marker, "file_io.cpp")
     # Rename only the resolver's call boundary for an exclusion/order spy.
     if present:

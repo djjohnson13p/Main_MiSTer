@@ -123,7 +123,8 @@ MglZipFallbackResult FileResolveMglZipFallback(char *path, size_t capacity);
 void FileGenerateSavePath(const char *name, char* out_name, int ext_replace = 1);
 
 #define SAVESTATE_DIR "savestates"
-void FileGenerateSavestatePath(const char *name, char* out_name, int sufx);
+// Pure complete-path builder. Output is unchanged on failure, including aliases.
+int FileGenerateSavestatePath(const char *name, char *out_name, size_t capacity, int sufx);
 
 #define SCREENSHOT_DIR "screenshots"
 #define SCREENSHOT_DEFAULT "screen"
