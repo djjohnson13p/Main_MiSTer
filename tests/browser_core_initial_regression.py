@@ -144,10 +144,13 @@ def main():
     root = args.root.resolve()
     harness = Path(__file__).with_suffix('.cpp')
     helper_before, harness_before = digest(Path(__file__).read_bytes()), digest(harness.read_bytes())
-    current_before = {name: digest((root / name).read_bytes()) for name in NAMES}
+    current_names = NAMES + (('controller_axis.h',) if (root / 'controller_axis.h').exists() else ())
+    current_before = {name: digest((root / name).read_bytes()) for name in current_names}
     head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     status_before = subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain'], text=True)
     sources = {name: subprocess.check_output(['git', '-C', str(root), 'show', f'{args.source_ref}:{name}']) if args.source_ref else (root / name).read_bytes() for name in NAMES}
+    if b'#include "controller_axis.h"' in sources['cfg.h']:
+        sources['controller_axis.h'] = subprocess.check_output(['git', '-C', str(root), 'show', f'{args.source_ref}:controller_axis.h']) if args.source_ref else (root / 'controller_axis.h').read_bytes()
     types, production, extracted = generate(sources)
     compiler = [args.cxx] if Path(args.cxx).is_file() else shlex.split(args.cxx, posix=os.name != 'nt')
     env = os.environ.copy()
@@ -155,6 +158,8 @@ def main():
         env['PATH'] = str(Path(compiler[0]).resolve().parent) + os.pathsep + env.get('PATH', '')
     with generated_directory(args.generated_dir) as directory:
         files = {'browser_core_initial_types.inc': types.encode(), 'browser_core_initial_production.inc': production.encode(), 'browser_core_initial_cfg.h': sources['cfg.h']}
+        if 'controller_axis.h' in sources:
+            files['controller_axis.h'] = sources['controller_axis.h']
         for name, raw in files.items():
             (directory / name).write_bytes(raw)
         executable = directory / ('core_initial.exe' if os.name == 'nt' else 'core_initial')
@@ -179,7 +184,7 @@ def main():
             if sum(case['assertions'] for case in cases) != observed['summary']['assertions'] or sum(case['failed_assertions'] for case in cases) != observed['summary']['failed_assertions']:
                 raise ValueError('Incomplete assertion accounting')
             observed['summary'].update(whole_observation_checks=control_checks, whole_observation_failures=len(control_failures), total_assertions=observed['summary']['assertions'] + control_checks, total_failed_assertions=observed['summary']['failed_assertions'] + len(control_failures))
-        current_after = {name: digest((root / name).read_bytes()) for name in NAMES}
+        current_after = {name: digest((root / name).read_bytes()) for name in current_names}
         helper_after, harness_after = digest(Path(__file__).read_bytes()), digest(harness.read_bytes())
         report = {'source_ref': args.source_ref or 'working tree', 'head': head, 'source_sha256': {name: digest(raw) for name, raw in sources.items()},
                   'helper_sha256': helper_before, 'harness_sha256': harness_before,

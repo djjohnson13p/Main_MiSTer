@@ -1532,6 +1532,7 @@ typedef struct
 	advancedButtonState advanced_state[ADVANCED_MAP_MAX];
 	bool has_advanced_map;
 	uint16_t advanced_last_pressed_keycode;
+	controller_axis::Coefficients axis_options;
 } devInput;
 
 static devInput input[NUMDEV] = {};
@@ -2664,7 +2665,7 @@ static bool joy_dir_is_diagonal(const int x, const int y)
 		abs((x > y) == (x > -y) ? (float)y / x : (float)x / y) >= JOY_DIAG_THRESHOLD;
 }
 
-static void joy_analog(int dev, int axis, int offset, int stick = 0)
+static void joy_analog(int dev, int axis, int offset, int stick = 0, bool apply_axis_options = false)
 {
 	int num = input[dev].num;
 	static int pos[2][NUMPLAYERS][2] = {};
@@ -2694,6 +2695,14 @@ static void joy_analog(int dev, int axis, int offset, int stick = 0)
 		}
 
 		joy_apply_deadzone(&x, &y, &input[dev], stick);
+
+		const auto &options = input[dev].axis_options;
+		if (apply_axis_options && (options.saturation || options.multiplier != 1.0 || options.nonlinearity != 1.0))
+		{
+			const bool psx = is_psx();
+			x = controller_axis::transform(x, psx, options);
+			y = controller_axis::transform(y, psx, options);
+		}
 
 		if (is_n64())
 		{
@@ -2976,6 +2985,21 @@ static void setup_deadzone(struct input_event* ev, int dev)
 		input[dev].deadzone = cfg_deadzone;
 		break;
 	}
+}
+
+static void setup_controller_axes(int dev)
+{
+	auto &options = input[dev].axis_options;
+	options = {0, 1.0, 1.0};
+	if (!cfg.controller_saturation[0].selector[0] && !cfg.controller_multiplier[0].selector[0] &&
+		!cfg.controller_nonlinearity[0].selector[0]) return;
+
+	const controller_axis::Identity identity = {
+		input[dev].vid, input[dev].pid, input[dev].id, input[dev].sysfs, get_unique_mapping(dev, 1)
+	};
+	options.saturation = static_cast<int>(controller_axis::first_match(cfg.controller_saturation, 32, identity, 0.0));
+	options.multiplier = controller_axis::first_match(cfg.controller_multiplier, 32, identity, 1.0);
+	options.nonlinearity = controller_axis::first_match(cfg.controller_nonlinearity, 32, identity, 1.0);
 }
 
 void unflag_players()
@@ -4128,19 +4152,19 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 						int offset = (value < -1 || value > 1) ? value : 0;
 						if (input[dev].stick_l[0] && ev->code == (uint16_t)input[dev].mmap[input[dev].stick_l[0]])
 						{
-							joy_analog(dev, 0, offset, 0);
+							joy_analog(dev, 0, offset, 0, true);
 						}
 						else if (input[dev].stick_l[1] && ev->code == (uint16_t)input[dev].mmap[input[dev].stick_l[1]])
 						{
-							joy_analog(dev, 1, offset, 0);
+							joy_analog(dev, 1, offset, 0, true);
 						}
 						else if (input[dev].stick_r[0] && ev->code == (uint16_t)input[dev].mmap[input[dev].stick_r[0]])
 						{
-							joy_analog(dev, 0, offset, 1);
+							joy_analog(dev, 0, offset, 1, true);
 						}
 						else if (input[dev].stick_r[1] && ev->code == (uint16_t)input[dev].mmap[input[dev].stick_r[1]])
 						{
-							joy_analog(dev, 1, offset, 1);
+							joy_analog(dev, 1, offset, 1, true);
 						}
 					}
 				}
@@ -5698,6 +5722,7 @@ int input_test(int getchar)
 				printf("opened %d(%2d): %s (%04x:%04x:%08x) %d \"%s\" \"%s\"\n", i, input[i].bind, input[i].devname, input[i].vid, input[i].pid, input[i].unique_hash, input[i].quirk, input[i].id, input[i].name);
 				restore_player(i);
 				setup_deadzone(&ev, i);
+				setup_controller_axes(i);
 			}
 			unflag_players();
 		}

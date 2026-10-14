@@ -6,6 +6,7 @@
 #define __CFG_H__
 
 #include <inttypes.h>
+#include "controller_axis.h"
 
 //// type definitions ////
 typedef struct {
@@ -80,6 +81,9 @@ typedef struct {
 	char preset_default[1023];
 	char player_controller[6][8][256];
 	char controller_deadzone[32][256];
+	controller_axis::Entry controller_saturation[32];
+	controller_axis::Entry controller_multiplier[32];
+	controller_axis::Entry controller_nonlinearity[32];
 	uint8_t dpad_threshold;
 	uint8_t rumble;
 	uint8_t wheel_force;

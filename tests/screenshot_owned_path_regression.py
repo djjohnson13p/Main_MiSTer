@@ -74,6 +74,10 @@ def main():
         return (ROOT / name).read_text(encoding="utf-8")
     names = ("file_io.cpp", "file_io.h", "scaler.cpp", "scaler.h", "offload.cpp", "offload.h", "profiling.h", "cfg.h", "lib/imlib2/Imlib2.h")
     sources = {name: read(name) for name in names}
+    copied_headers = ["scaler.h", "offload.h", "profiling.h", "cfg.h"]
+    if '#include "controller_axis.h"' in sources["cfg.h"]:
+        sources["controller_axis.h"] = read("controller_axis.h")
+        copied_headers.append("controller_axis.h")
     declarations, paths, screenshot, offload = generate(sources)
     command = [args.cxx] if Path(args.cxx).is_file() else shlex.split(args.cxx)
     compiler = shutil.which(command[0]) or command[0]
@@ -85,7 +89,7 @@ def main():
         return subprocess.check_output([converter, "-u", str(path)], text=True, env=environment).strip() if "cygwin" in target else str(path)
     with tempfile.TemporaryDirectory(prefix="mister-screenshot-path-") as temporary:
         work = Path(temporary)
-        for name in ("scaler.h", "offload.h", "profiling.h", "cfg.h"):
+        for name in copied_headers:
             (work / name).write_text(sources[name], encoding="utf-8")
         (work / "Imlib2.h").write_text(sources["lib/imlib2/Imlib2.h"], encoding="utf-8")
         for name, content in (("screenshot_types.inc", declarations), ("screenshot_paths.inc", paths),

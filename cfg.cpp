@@ -22,7 +22,8 @@ static FILE *debug_file = NULL;
 
 typedef enum
 {
-	UINT8 = 0, INT8, UINT16, INT16, UINT32, INT32, HEX8, HEX16, HEX32, FLOAT, STRING, UINT32ARR, HEX32ARR, STRINGARR
+	UINT8 = 0, INT8, UINT16, INT16, UINT32, INT32, HEX8, HEX16, HEX32, FLOAT, STRING, UINT32ARR, HEX32ARR, STRINGARR,
+	AXIS_SATURATION, AXIS_MULTIPLIER, AXIS_NONLINEARITY
 } ini_vartypes_t;
 
 typedef struct
@@ -75,6 +76,9 @@ static const ini_var_t ini_vars[] =
 	{ "OSD_ROTATE", (void*)(&(cfg.osd_rotate)), UINT8, 0, 3 },
 	{ "OSD_CLOCK_12H", (void*)(&(cfg.osd_clock_12h)), UINT8, 0, 1 },
 	{ "DEADZONE", (void*)(&(cfg.controller_deadzone)), STRINGARR, sizeof(cfg.controller_deadzone) / sizeof(*cfg.controller_deadzone), sizeof(*cfg.controller_deadzone) },
+	{ "SATURATION", (void*)(cfg.controller_saturation), AXIS_SATURATION, 32, sizeof(*cfg.controller_saturation) },
+	{ "MULTIPLIER", (void*)(cfg.controller_multiplier), AXIS_MULTIPLIER, 32, sizeof(*cfg.controller_multiplier) },
+	{ "NONLINEARITY", (void*)(cfg.controller_nonlinearity), AXIS_NONLINEARITY, 32, sizeof(*cfg.controller_nonlinearity) },
 	{ "DPAD_THRESHOLD", (void*)(&(cfg.dpad_threshold)), UINT8, 5, 95 },
 	{ "GAMEPAD_DEFAULTS", (void*)(&(cfg.gamepad_defaults)), UINT8, 0, 1 },
 	{ "RECENTS", (void*)(&(cfg.recents)), UINT8, 0, 1 },
@@ -387,6 +391,31 @@ static void ini_parse_var(char* buf)
 		case STRING:
 			memset(var->var, 0, var->max);
 			snprintf((char*)(var->var), var->max, "%s", buf+i);
+			break;
+
+		case AXIS_SATURATION:
+		case AXIS_MULTIPLIER:
+		case AXIS_NONLINEARITY:
+			{
+				auto *entries = static_cast<controller_axis::Entry*>(var->var);
+				if (!var_array_append[var_id])
+				{
+					var_array_append[var_id] = true;
+					memset(entries, 0, var->min * sizeof(*entries));
+				}
+				const auto kind = var->type == AXIS_SATURATION ? controller_axis::SATURATION :
+					var->type == AXIS_MULTIPLIER ? controller_axis::MULTIPLIER : controller_axis::NONLINEARITY;
+				controller_axis::Entry accepted;
+				if (!controller_axis::parse(kind, buf + i, accepted))
+				{
+					cfg_error("%s: invalid controller setting", var->name);
+					break;
+				}
+				int n = 0;
+				while (n < var->min && entries[n].selector[0]) ++n;
+				if (n < var->min) entries[n] = accepted;
+				else cfg_error("%s: too many controller settings", var->name);
+			}
 			break;
 
 		case STRINGARR:
@@ -744,6 +773,16 @@ void cfg_print()
 
 		case STRING:
 			if (*(uint32_t*)ini_vars[i].var) printf("  %s=%s\n", ini_vars[i].name, (char*)ini_vars[i].var);
+			break;
+
+		case AXIS_SATURATION:
+		case AXIS_MULTIPLIER:
+		case AXIS_NONLINEARITY:
+			{
+				const auto *entries = static_cast<const controller_axis::Entry*>(ini_vars[i].var);
+				for (int n = 0; n < ini_vars[i].min && entries[n].selector[0]; ++n)
+					printf("  %s=%s,%.17g\n", ini_vars[i].name, entries[n].selector, entries[n].value);
+			}
 			break;
 
 		case STRINGARR:
