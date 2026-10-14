@@ -42,6 +42,7 @@
 #define BTN_WEST 0x134
 #define BTN_MODE 0x13c
 struct input_event { uint16_t type; uint16_t code; int32_t value; };
+struct input_absinfo { int value; };
 #endif
 
 #include "input_remap_types.inc"
@@ -67,6 +68,7 @@ struct DeviceFixture
 struct DeviceFixtures
 {
 	DeviceFixture records[NUMDEV];
+	operator DeviceFixture *() { return records; }
 	DeviceFixture &operator[](int index)
 	{
 		if (index < 0 || index >= NUMDEV)
@@ -88,6 +90,23 @@ static bool menu_core = false;
 struct SavedEntry { int device; advancedButtonMap entry; };
 static std::vector<SavedEntry> saved;
 static std::vector<int> cleared;
+static int state = 2, timeout = 0;
+struct PoolFixture { int fd, revents, events; };
+static PoolFixture pool[NUMDEV + 1];
+#ifndef POLLIN
+#define POLLIN 1
+#endif
+#ifndef EVIOCGRAB
+#define EVIOCGRAB 0x40044590
+#endif
+static int key_states[16];
+static bool changed_devices = true, changed_joycon = true;
+static int closed_devices = 0, ungrabbed_devices = 0, cleared_autofire = 0;
+bool check_devs() { return changed_devices; }
+bool process_joycon(int, input_event *, input_absinfo *) { return changed_joycon; }
+void clear_autofire(int) { cleared_autofire++; }
+int fixture_close(int) { closed_devices++; return 0; }
+int fixture_ioctl(int, int, int) { ungrabbed_devices++; return 0; }
 
 bool is_menu() { return menu_core; }
 unsigned long GetTimer(unsigned long offset) { return now_ms + offset; }
@@ -107,7 +126,16 @@ void input_advanced_save(int device, bool do_delete)
 	cleared.push_back(device);
 }
 
+#define close fixture_close
+#define ioctl fixture_ioctl
 #include "input_remap_production.inc"
+#undef ioctl
+#undef close
+
+#if !HAVE_ADVANCED_HANDOFF
+// Historical API compatibility only: the old production finish still runs.
+void finish_map_setting(int dismiss, bool) { finish_map_setting(dismiss); }
+#endif
 
 static int failures = 0;
 static unsigned int checks = 0;
@@ -722,6 +750,168 @@ static void menu_core_escape_compatibility()
 		"Menu-core matching Menu button release must retain capture data and disabled commands");
 }
 
+static void advanced_command_capture()
+{
+	begin(); event(0, KEY_F12, 1); event(0, KEY_F12, 0);
+	check(get_map_advance() && get_map_advance() && get_map_dev() == 0
+		&& get_map_button() == 0 && get_map_set() == 1 && !store.entry.input_codes[0],
+		"first F12 tap must remain an unconsumed Advanced request, without becoming chord data");
+	input[2].mmap[SYS_BTN_OSD_KTGL + 1] = input[2].mmap[SYS_BTN_OSD_KTGL + 2] = BTN_MODE;
+	input[2].osd_combo = 3;
+	event(2, BTN_MODE, 0); event(2, KEY_A, 1); event(2, KEY_B, 2); event(2, KEY_B, 0);
+	event(0, KEY_F12, 2);
+	check(get_map_advance() && !get_map_finish() && !get_map_cancel() && input[2].osd_combo == 0
+		&& get_map_dev() == 0 && get_map_button() == 0 && !store.entry.input_codes[0],
+		"queued foreign input and released-command repeats must preserve pending Advanced and real combo bookkeeping");
+	event(0, KEY_F12, 1); // A second fresh press before UI must rearm the owned release.
+	check(get_map_advance() && get_map_button() == 0 && get_map_dev() == 0,
+		"second fresh owned F12 before UI must retain the request and selected source");
+	finish_map_setting(0, true);
+	check(!get_map_advance() && !mapping && saved.empty() && cleared.empty(),
+		"explicit Advanced handoff must consume the request without saving or clearing remaps");
+
+	begin(); map_to_keyboard();
+	event(2, KEY_F12, 2);
+	check(!get_map_advance() && get_map_dev() == 1 && !get_map_button(),
+		"selected next-source-phase F12 repeat cannot create an unowned Advanced request");
+	input[1].mmap[SYS_BTN_MENU_FUNC] = KEY_F12;
+	event(2, KEY_F12, 2); now_ms += 5000;
+	check(!get_map_advance(), "F12 repeat must not arm mapped-OK fallback timing even if OK is mapped to F12");
+	input[2].mmap[SYS_BTN_OSD_KTGL + 1] = input[2].mmap[SYS_BTN_OSD_KTGL + 2] = KEY_F12;
+	event(2, KEY_F12, 1); event(2, KEY_F12, 0);
+	check(get_map_dev() == 1 && get_map_advance() && get_map_button() == 0
+		&& get_map_set() == 1 && input[2].osd_combo == 0 && saved.size() == 1,
+		"Advanced from another keyboard in the next source phase must retain the existing selected pad");
+	finish_map_setting(0, true);
+	check(cleared.empty() && saved.size() == 1, "Advanced handoff must preserve earlier saved source/output entries");
+
+	begin(); event(0, KEY_F12, 2); event(0, KEY_F12, 0);
+	check(get_map_dev() == -1 && !get_map_advance(), "held opener repeat/release cannot create an Advanced request");
+	event(0, KEY_A, 1); event(0, KEY_F12, 1); event(0, KEY_F12, 0); tap(2, KEY_O);
+	check(saved.size() == 1 && saved[0].entry.input_codes[0] == KEY_A
+		&& saved[0].entry.input_codes[1] == KEY_F12 && saved[0].entry.output_codes[0] == KEY_O,
+		"second source-member F12 and foreign keyboard output must remain chord data");
+	begin(); event(0, KEY_A, 1); event(0, KEY_B, 1); event(0, KEY_F12, 1); event(0, KEY_F12, 0);
+	tap(2, KEY_F12);
+	check(saved.size() == 1 && saved[0].entry.input_codes[2] == KEY_F12
+		&& saved[0].entry.output_codes[0] == KEY_F12 && !get_map_advance(),
+		"third source-member and first output-member F12 must remain data");
+	for (int half : {1, 2})
+	{
+		begin(); store.entry.input_codes[0] = KEY_A; store.entry.output_codes[0] = KEY_O;
+		start_map_setting(1, half, &store.entry); tap(2, KEY_F12);
+		check(get_map_finish() && !get_map_advance()
+			&& (half == 1 ? store.entry.input_codes[0] : store.entry.output_codes[0]) == KEY_F12,
+			"count-one edited input/output F12 must retain data and normal completion");
+		finish_map_setting(0);
+	}
+	begin(); menu_core = true; tap(0, KEY_F12); tap(2, KEY_O);
+	check(saved.size() == 1 && saved[0].entry.input_codes[0] == KEY_F12
+		&& saved[0].entry.output_codes[0] == KEY_O && !get_map_advance(),
+		"Menu-core first F12 must remain mapping data with Advanced disabled");
+}
+
+static void prepare_inventory_fixture()
+{
+	for (auto &item : pool) item = {-1, 0, 0};
+	pool[NUMDEV].revents = POLLIN;
+	pool[0].fd = 42;
+	changed_devices = changed_joycon = true;
+	closed_devices = ungrabbed_devices = cleared_autofire = 0;
+	state = 2; timeout = 9;
+}
+
+static void advanced_command_lifecycle()
+{
+	for (int transition : {0, 1, 2})
+	for (bool release_first : {false, true})
+	{
+		begin(); map_to_keyboard(); event(0, KEY_F12, 1);
+		if (release_first) event(0, KEY_F12, 0);
+		prepare_inventory_fixture();
+		if (transition == 0)
+		{
+			check(inventory_changed() == 0 && state == 1
+				&& closed_devices == 1 && ungrabbed_devices == 1,
+				"real device-change branch must retain close/ungrab/rebuild flow");
+		}
+		else if (transition == 1)
+		{
+			input[1].quirk = QUIRK_JOYCON;
+			check(joycon_changed(1) == 0 && state == 1, "real JoyCon branch must retain rebuild return flow");
+		}
+		else { state = 1; inventory_initialize(); }
+		check(get_map_finish() && get_map_dev() == -1 && !get_map_advance() && !get_map_cancel(),
+			"actual inventory invalidation must cancel pending Advanced into harmless unselected Finish");
+		advancedButtonMap original = store.entry;
+		event(2, KEY_A, 1); event(2, KEY_A, 0);
+		check(get_map_finish() && !std::memcmp(&original, &store.entry, sizeof(original)),
+			"events after inventory invalidation must not restart terminal capture");
+		state = 1; inventory_initialize();
+		check(get_map_finish() && get_map_dev() == -1 && !get_map_advance(),
+			"repeated state-one initialization must preserve harmless Finish without restoring the request");
+		check(timeout == 0 && cleared_autofire >= NUMPLAYERS && input[0].osd_combo == 0,
+			"real initialization prefix must retain timeout/autofire/device-state reset");
+		finish_map_setting(0);
+		check(!mapping && cleared.empty() && saved.size() == 1,
+			"UI Finish after invalidation must not save or clear a reused device index");
+		begin(); tap(1, BTN_NORTH); tap(0, KEY_P);
+		check(saved.size() == 1 && saved[0].device == 1,
+			"new capture after rebuild must accept normal data without stale terminal state");
+	}
+
+	begin(); event(0, KEY_F12, 1); prepare_inventory_fixture(); changed_devices = false;
+	check(inventory_changed() == 2 && get_map_advance() && !get_map_finish(),
+		"poll notification without a real inventory change must not invalidate Advanced");
+	changed_joycon = false; input[1].quirk = QUIRK_JOYCON;
+	check(joycon_changed(1) == 2 && get_map_advance(),
+		"JoyCon event without a rebuild must not invalidate Advanced");
+	state = 2; inventory_initialize();
+	check(get_map_advance(), "state-two initialization wrapper must not run a state-one reset");
+	finish_map_setting(0);
+
+	for (int dismiss : {0, 1, 2})
+	for (bool handoff : {false, true})
+	{
+		begin(); event(0, KEY_F12, 1); finish_map_setting(dismiss, handoff);
+		check(!mapping && !get_map_advance() && (dismiss ? cleared == std::vector<int>{0} : cleared.empty()),
+			"default/dismiss finish and explicit handoff must preserve existing source clear semantics");
+		start_map_setting(3, 0, &store.entry);
+		check(get_map_dev() == -1 && !get_map_advance() && !get_map_finish(),
+			"every new capture must clear previous Advanced request and command identity");
+	}
+	begin(); event(0, KEY_F12, 1); start_map_setting(3, 0, &store.entry);
+	event(0, KEY_F12, 0); check(get_map_dev() == -1 && !get_map_advance(),
+		"restart before UI must reset pending command without treating its old release as a new target");
+	begin(); finish_map_setting(0, true);
+	check(!mapping && get_map_dev() == -1 && cleared.empty(), "unselected explicit finish must remain harmless");
+
+	// The new invalidation hooks own only F12 state. Unrelated legacy holds
+	// retain their deadlines here; this is not a general hotplug-safety claim.
+	for (int transition : {0, 1, 2})
+	for (bool menu_hold : {false, true})
+	{
+		begin(); prepare_inventory_fixture();
+		if (menu_hold)
+		{
+			input[1].mmap[SYS_BTN_OSD_KTGL + 1] = input[1].mmap[SYS_BTN_OSD_KTGL + 2] = BTN_MODE;
+			event(1, BTN_MODE, 1);
+		}
+		else event(1, BTN_SOUTH, 1);
+		now_ms += 4999;
+		check(!get_map_advance() && !get_map_cancel(), "unrelated real hold must remain before its deadline");
+		if (transition == 0) inventory_changed();
+		else if (transition == 1) { input[1].quirk = QUIRK_JOYCON; joycon_changed(1); }
+		else { state = 1; inventory_initialize(); }
+		check(get_map_dev() == 1 && !get_map_finish() && !get_map_advance() && !get_map_cancel(),
+			"inventory hook without F12 state must preserve unrelated capture and pending hold deadline");
+		now_ms++;
+		check(menu_hold ? get_map_cancel() : get_map_advance(),
+			"inventory hook without F12 state must not erase unrelated Menu or mapped-OK elapsed hold");
+		finish_map_setting(0);
+	}
+}
+
 int main()
 {
 	pending_events(); combo_opener_release(); abort_and_clear(); normalization_and_binding();
@@ -730,6 +920,7 @@ int main()
 	unmatched_releases(); release_identity_and_reset(); edited_half_releases_and_timers();
 	terminal_capture_events();
 	menu_core_escape_compatibility();
+	advanced_command_capture(); advanced_command_lifecycle();
 	if (failures) std::fprintf(stderr, "%d remap checks failed\n", failures);
 	else std::printf("PASS: production remap source selection, release ownership, chords, commands and clear scope (%u checks)\n", checks);
 	return failures ? 1 : 0;

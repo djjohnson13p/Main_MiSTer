@@ -18,6 +18,7 @@ static int finish_result = 0;
 static int advance_result = 0;
 static int finish_calls = 0;
 static int finish_dismiss = -1;
+static bool finish_handoff = false;
 static int update_calls = 0;
 static int sleep_calls = 0;
 static int start_calls = 0;
@@ -88,13 +89,14 @@ static int get_map_cancel() { return cancel_result; }
 static int get_map_finish() { return finish_result; }
 static int get_map_advance() { return advance_result; }
 static int get_map_set() { return mapping_set; }
-static void finish_map_setting(int dismiss)
+static void finish_map_setting(int dismiss, bool advanced_handoff)
 {
     ++finish_calls;
     finish_dismiss = dismiss;
+    finish_handoff = advanced_handoff;
     mapping = 0;
     // Production mapping completion retains the chosen mapping_dev. Persistence
-    // is outside this renderer test; the fixture records the exact dismiss arg.
+    // is outside this renderer test; the fixture records both finish arguments.
 }
 
 static void production_infowrite(int pos, const char *text);
@@ -126,6 +128,7 @@ static void reset()
     cancel_result = finish_result = advance_result = 0;
     finish_calls = update_calls = sleep_calls = start_calls = 0;
     finish_dismiss = -1;
+    finish_handoff = false;
     start_store = nullptr;
     entry_capture_code = 0;
     menustate = MENU_JOYKBDMAP1;
@@ -356,6 +359,7 @@ static void renderer_cases()
                   "completion status distinguishes selected clear from no-device clear");
             check(rows[1].empty() && rows[3].empty() && rows[15].empty(), "completion keeps original instruction clears");
             check(finish_calls == 1 && finish_dismiss == dismiss, "completion preserves exact finish dismiss argument");
+            check(!finish_handoff, "ordinary Clear and Finish must not retain Advanced release ownership");
             check(menustate == MENU_COMMON1 && menusub == 3 && sleep_calls == 1, "completion retains original menu return");
             check(mapping_dev == (chosen ? 4 : -1), "completion preserves selected source slot");
         }
@@ -368,6 +372,7 @@ static void renderer_cases()
     check_source(no_source, "actual clear with invalid selected index retains no-device prompt");
     check(trim(rows[2]) == "No device chosen", "invalid index never claims a device remap clear");
     check(finish_calls == 1 && finish_dismiss == 1, "invalid source still preserves original finish dismiss argument");
+    check(!finish_handoff, "invalid-source Clear must use the default non-handoff finish");
 
     reset();
     select_device(5, "Advanced source");
@@ -376,6 +381,7 @@ static void renderer_cases()
     check_source("Source: Advanced source", "actual advance transition displays chosen source");
     check(menustate == MENU_ADVANCED_MAP_LIST1 && menusub == 0 && finish_calls == 1 && finish_dismiss == 0 && abm_dev_num == 5,
           "advance retains selected device and original transition/finish argument");
+    check(finish_handoff, "actual Advance branch must explicitly retain consumed-command release ownership");
 }
 
 int main()

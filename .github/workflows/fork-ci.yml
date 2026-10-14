@@ -31,6 +31,7 @@ jobs:
           python3 tests/video_spd_regression.py
           python3 tests/input_remap_regression.py
           python3 tests/input_remap_ui_regression.py
+          python3 tests/input_remap_handoff_regression.py
       - name: Install the matching Arm toolchain
         run: |
           url=https://developer.arm.com/-/media/Files/downloads/gnu-a/10.2-2020.11/binrel

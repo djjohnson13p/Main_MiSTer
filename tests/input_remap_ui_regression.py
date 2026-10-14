@@ -43,6 +43,17 @@ def generate(input_source, header, menu):
     declarations = mapping_struct.group(0) + "\n" + device_limit.group(0) + "\n"
     declarations += "struct devInput { uint16_t vid, pid; " + name_field.group(0).strip() + " char guard[128]; };\n"
     declarations += "static devInput input[NUMDEV] = {};\n"
+    finish_declaration = re.search(r"^void finish_map_setting\([^\n]+", header, re.MULTILINE)
+    if not finish_declaration:
+        raise ValueError("Unable to extract production mapping finish declaration")
+    if "bool" in finish_declaration.group(0):
+        if not re.search(r"bool\s+\w+\s*=\s*false", finish_declaration.group(0)):
+            raise ValueError("Production Advanced handoff argument must default to false")
+        declarations += "static " + finish_declaration.group(0) + "\n"
+    else:
+        # Historical single-argument calls still execute the actual renderer;
+        # the equivalent false default exposes the missing explicit handoff.
+        declarations += "static void finish_map_setting(int dismiss, bool advanced_handoff = false);\n"
 
     accessor = "void get_map_source_name(" in input_source
     helper_marker = "static bool menu_show_map_source("

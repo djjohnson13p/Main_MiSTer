@@ -1742,6 +1742,13 @@ static uint32_t map_advance_timer = 0;
 static std::vector<uint32_t> mapping_phase_presses;
 static bool mapping_capture_done = false;
 
+// An immediate Advanced command outlives capture until UI consumes it. Its
+// held release can also arrive after the explicit Advanced handoff.
+static bool mapping_advanced_pending = false;
+static int mapping_advanced_dev = -1;
+static uint16_t mapping_advanced_code = 0;
+static bool mapping_advanced_await_release = false;
+
 static bool mapping_has_press(int dev, uint16_t code)
 {
 	uint32_t identity = ((uint32_t)dev << 16) | code;
@@ -1763,8 +1770,27 @@ static void mapping_complete_capture()
 	mapping_capture_done = true;
 }
 
+static void mapping_reset_advanced(bool invalidate_device = false)
+{
+	if (invalidate_device && !mapping_advanced_pending && mapping_advanced_dev < 0) return;
+	if (invalidate_device && mapping && mapping_advanced_pending)
+	{
+		// The selected index is about to be reused. Finish without saving or
+		// clearing that stale device, rather than strand terminal capture.
+		mapping_finish = 1;
+		mapping_dev = -1;
+		mapping_complete_capture();
+	}
+	mapping_advanced_pending = false;
+	mapping_advanced_dev = -1;
+	mapping_advanced_code = 0;
+	mapping_advanced_await_release = false;
+	osd_timer = map_advance_timer = 0;
+}
+
 void start_map_setting(int cnt, int set, advancedButtonMap *abm_store)
 {
+	mapping_reset_advanced();
 	mapping_current_key = 0;
 	mapping_current_dev = -1;
 	mapping_phase_presses.clear();
@@ -1860,7 +1886,7 @@ int get_map_cancel()
 
 int get_map_advance()
 {
-	return (mapping && !is_menu() && map_advance_timer && CheckTimer(map_advance_timer));
+	return (mapping && !is_menu() && (mapping_advanced_pending || (map_advance_timer && CheckTimer(map_advance_timer))));
 }
 
 static char *get_unique_mapping(int dev, int force_unique = 0)
@@ -1909,8 +1935,16 @@ static char *get_kbdmap_name(int dev)
 	return name;
 }
 
-void finish_map_setting(int dismiss)
+void finish_map_setting(int dismiss, bool advanced_handoff)
 {
+	bool keep_release = advanced_handoff && !dismiss && mapping && mapping_advanced_pending
+		&& mapping_type == 3 && mapping_store && mapping_count == 3 && mapping_set == 1 && !is_menu();
+	if (keep_release && mapping_advanced_await_release)
+	{
+		mapping_advanced_pending = false;
+		osd_timer = map_advance_timer = 0;
+	}
+	else mapping_reset_advanced();
 	mapping = 0;
 	mapping_complete_capture();
 	if (mapping_dev<0) return;
@@ -3243,6 +3277,30 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 		}
 	}
 
+	// Match the normalized code and effective device after real combo updates.
+	// Consume only this command's release/repeats, including after handoff.
+	if (ev->type == EV_KEY && dev == mapping_advanced_dev && origcode == mapping_advanced_code)
+	{
+		if (ev->value == 0 && mapping_advanced_await_release)
+		{
+			mapping_advanced_await_release = false;
+			if (!mapping_advanced_pending) mapping_reset_advanced();
+			return;
+		}
+		if (ev->value == 2 && (mapping_advanced_await_release || mapping_advanced_pending)) return;
+		if (ev->value == 1)
+		{
+			if (mapping_advanced_pending)
+			{
+				mapping_advanced_await_release = true;
+				return;
+			}
+			// A fresh normal press supersedes a missed old release. Its own
+			// later release must retain normal keyboard/menu behavior.
+			mapping_reset_advanced();
+		}
+	}
+
 	// Update combo state above, but only a press accepted in this phase may
 	// release a chord or drive Menu release commands. Match before Escape rewrite.
 	if (mapping && mapping_type == 3 && ev->type == EV_KEY
@@ -3282,13 +3340,24 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 	{
 		bool jkm_can_intr = mapping_count == 3 && mapping_button <= 1 && mapping_set == 1;
 		if (mapping_dev < 0) mapping_dev = dev;
+		if (mapping_store && mapping_count == 3 && mapping_set == 1 && !mapping_button
+			&& !is_menu() && ev->value == 1 && ev->code == KEY_F12)
+		{
+			mapping_advanced_pending = true;
+			mapping_advanced_dev = dev;
+			mapping_advanced_code = origcode;
+			mapping_advanced_await_release = true;
+			osd_timer = map_advance_timer = 0;
+			mapping_complete_capture();
+			return;
+		}
 		if (ev->value == 1 && ev->code == KEY_ENTER) map_skip = 1;
 		if (map_skip && jkm_can_intr)
 			mapping_finish = 1;
 
-		if (jkm_can_intr
-			  && (ev->code == (input[mapping_dev].mmap[SYS_BTN_MENU_FUNC] & 0xFFFF) || ev->code == KEY_F12))
-					map_advance_timer = ev->value ? (ev->code == KEY_F12) ? 1 : GetTimer(5000) : 0;
+		if (jkm_can_intr && ev->code != KEY_F12
+			  && ev->code == (input[mapping_dev].mmap[SYS_BTN_MENU_FUNC] & 0xFFFF))
+					map_advance_timer = ev->value ? GetTimer(5000) : 0;
 
 		if (ev->value == 1)
 		{
@@ -5208,6 +5277,7 @@ int input_test(int getchar)
 
 	if (state == 1)
 	{
+		mapping_reset_advanced(true);
 		timeout = 0;
 		printf("Open up to %d input devices.\n", NUMDEV);
 		for (int i = 0; i < NUMDEV; i++)
@@ -5694,6 +5764,7 @@ int input_test(int getchar)
 
 			if ((pool[NUMDEV].revents & POLLIN) && check_devs())
 			{
+				mapping_reset_advanced(true);
 				printf("Close all devices.\n");
 				for (int i = 0; i < NUMDEV; i++) if (pool[i].fd >= 0)
 				{
@@ -5913,6 +5984,7 @@ int input_test(int getchar)
 								{
 									if (process_joycon(i, &ev, &absinfo))
 									{
+										mapping_reset_advanced(true);
 										state = 1;
 										return 0;
 									}

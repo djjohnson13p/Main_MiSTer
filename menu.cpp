@@ -4508,7 +4508,7 @@ void HandleUI(void)
 				} else if (get_map_advance()) {
 					menustate = MENU_ADVANCED_MAP_LIST1;
 					menusub = 0;
-					finish_map_setting(0);
+					finish_map_setting(0, true);
 				} else if (get_map_set() == 2) {
 					bool is_kbd = abm_edit_map.input_codes[0] && abm_edit_map.input_codes[0] <= 256;
 					if (is_kbd)

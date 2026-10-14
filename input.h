@@ -109,7 +109,8 @@ int get_map_type();
 int get_map_clear();
 int get_map_cancel();
 int get_map_finish();
-void finish_map_setting(int dismiss);
+// Only the successful Advanced UI handoff retains its consumed held release.
+void finish_map_setting(int dismiss, bool advanced_handoff = false);
 uint16_t get_map_vid();
 uint16_t get_map_pid();
 int get_map_dev();

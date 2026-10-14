@@ -4,8 +4,9 @@
 Run: python3 tests/input_remap_regression.py [--cxx g++]
 Use --source-ref COMMIT to demonstrate failures against local Git history.
 The real initialization, finish/clear functions, per-phase press ownership,
-keyboard normalization, device binding, OSD-combo handling and type-3 event
-branch are copied intact.
+immediate Advanced command, inventory invalidation branches, keyboard
+normalization, device binding, OSD-combo handling and type-3 event branch are
+copied intact.
 Device discovery, clocks, core output and persistence use host fixtures.
 """
 import argparse
@@ -45,11 +46,14 @@ def generate(cpp, header, hardware):
     typedef_start = header.index("typedef struct {", header.index("#define ADVANCED_MAP_MAX"))
     typedef_end = header.index("} advancedButtonMap;", typedef_start) + len("} advancedButtonMap;")
     types = header[typedef_start:typedef_end] + "\n"
-    types += "\n".join(re.findall(r"^#define (?:SYS_|NUMBUTTONS|ADVANCED_MAP_MAX)[^\n]*", header, re.MULTILINE)) + "\n"
+    types += "\n".join(re.findall(r"^#define (?:SYS_|NUMBUTTONS|NUMPLAYERS|ADVANCED_MAP_MAX)[^\n]*", header, re.MULTILINE)) + "\n"
     types += re.search(r"^#define NUMDEV [^\n]+", cpp, re.MULTILINE).group() + "\n"
     types += block(cpp, "enum QUIRK\n", "input.cpp")
     types += "\n".join(re.findall(r"^#define JOYCON_[^\n]+", cpp, re.MULTILINE)) + "\n"
     types += re.search(r"^#define KEY_EMU [^\n]+", header, re.MULTILINE).group() + "\n"
+    finish_declaration = re.search(r"^void finish_map_setting\([^\n]+", header, re.MULTILINE).group()
+    types += finish_declaration + "\n"
+    types += f"#define HAVE_ADVANCED_HANDOFF {int('bool ' in finish_declaration)}\n"
 
     generated = region(cpp, "static int mapping = 0;", "void start_map_setting(", "input.cpp")
     generated += block(hardware, "unsigned long CheckTimer(", "hardware.cpp")
@@ -75,6 +79,17 @@ def generate(cpp, header, hardware):
     generated += region(callback_body, "\tint old_combo =", "\n\t//mapping", "input.cpp", callback_line_offset)
     generated += block(callback_body, "if (mapping && mapping_type == 3 && ev->type == EV_KEY)", "input.cpp", callback_line_offset)
     generated += "}\n"
+    # Exercise each actual inventory invalidation point, with only discovery,
+    # descriptor close/grab and autofire side effects supplied by host fixtures.
+    generated += "int inventory_changed()\n{\n"
+    generated += block(cpp, "if ((pool[NUMDEV].revents & POLLIN) && check_devs())", "input.cpp")
+    generated += "return 2;\n}\n"
+    generated += "int joycon_changed(int i)\n{\ninput_event ev = {}; input_absinfo absinfo = {};\n"
+    generated += block(cpp, "if (input[i].quirk == QUIRK_JOYCON)\n", "input.cpp")
+    generated += "return 2;\n}\n"
+    generated += "int inventory_initialize()\n{\n"
+    generated += region(cpp, "\tif (state == 1)\n", "\n\t\tint n = 0;", "input.cpp")
+    generated += "}\nreturn 0;\n}\n"
     return types, generated
 
 
