@@ -145,12 +145,12 @@ const char snes_pf94_1m_header[] = {
 uint8_t* snes_get_header(fileTYPE *f)
 {
 	memset(hdr, 0, sizeof(hdr));
+	if (f->size <= 0 || f->size > INT_MAX || f->size == 512) return NULL;
 	uint32_t size = f->size;
 	uint8_t *prebuf = (uint8_t*)malloc(size);
 	if (prebuf)
 	{
-		FileSeekLBA(f, 0);
-		if (FileReadAdv(f, prebuf, size))
+		if (FileSeekLBA(f, 0) && FileReadAdv(f, prebuf, size) == (int)size)
 		{
 			uint8_t *buf = prebuf;
 
@@ -165,16 +165,16 @@ uint8_t* snes_get_header(fileTYPE *f)
 			uint32_t addr = find_header(buf, size);
 
 			bool is_bsx_bios = false;
-			if (!memcmp(buf+0x7FC0, "Satellaview BS-X     ", 21)) {
+			if (size >= 0x7FC0 + 21 && !memcmp(buf+0x7FC0, "Satellaview BS-X     ", 21)) {
 				is_bsx_bios = true;
 			}
 
 			bool is_sufami_bios = false, is_sufami_base = false, is_sufami_turbo = false;
-			if (!memcmp(buf, "BANDAI SFC-ADX", 14)) {
+			if (size >= 14 && !memcmp(buf, "BANDAI SFC-ADX", 14)) {
 				uint32_t offs = 0;
-				while (offs < size) {
+				while (offs <= size - 14) {
 					if (!memcmp(buf + offs, "BANDAI SFC-ADX", 14)) {
-						if (!memcmp(buf + offs + 0x10, "SFC-ADX BACKUP", 14)) {
+						if (size - offs >= 0x10 + 14 && !memcmp(buf + offs + 0x10, "SFC-ADX BACKUP", 14)) {
 							is_sufami_bios = true;
 						}
 						else {
@@ -184,19 +184,20 @@ uint8_t* snes_get_header(fileTYPE *f)
 						}
 						offs += 1024 * 1024;
 					}
+					else break;
 				}
 			}
 
 			bool is_cc92 = false, is_pf94 = false;
-			if (!memcmp(buf + 0x7FC0, snes_cc92_header, 32)) {
+			if (size >= 0x7FC0 + 32 && !memcmp(buf + 0x7FC0, snes_cc92_header, 32)) {
 				is_cc92 = true;
 			}
-			if (!memcmp(buf + 0x7FC0, snes_pf94_10k_header, 32) ||
-				!memcmp(buf + 0x7FC0, snes_pf94_1m_header, 64)) {
+			if ((size >= 0x7FC0 + 32 && !memcmp(buf + 0x7FC0, snes_pf94_10k_header, 32)) ||
+				(size >= 0x7FC0 + 64 && !memcmp(buf + 0x7FC0, snes_pf94_1m_header, 64))) {
 				is_pf94 = true;
 			}
 
-			if (addr)
+			if (addr >= 14 && size >= 64 && addr <= size - 64)
 			{
 				uint8_t ramsz = buf[addr + RamSize];
 				if (ramsz >= 0x09) ramsz = 0;
@@ -345,9 +346,16 @@ uint8_t* snes_get_header(fileTYPE *f)
 			}
 			*(uint32_t*)(&hdr[4]) = addr;
 		}
-		FileSeekLBA(f, 0);
+		else
+		{
+			free(prebuf);
+			return NULL;
+		}
+		int rewound = FileSeekLBA(f, 0);
 		free(prebuf);
+		if (!rewound) return NULL;
 	}
+	else return NULL;
 	return hdr;
 }
 
@@ -419,12 +427,13 @@ static uint32_t next_pow2(uint32_t v)
 
 uint8_t* snes_get_mirrored_rom(fileTYPE *f, uint32_t *out_size)
 {
+	if (out_size) *out_size = 0;
+	if (f->size <= 0 || f->size > INT_MAX || f->size == 512) return NULL;
 	uint32_t size = f->size;
 	uint8_t *rom = (uint8_t*)malloc(size);
 	if (!rom) { printf("SNES: malloc(%u) failed\n", size); return NULL; }
 
-	FileSeekLBA(f, 0);
-	if (!FileReadAdv(f, rom, size)) {
+	if (!FileSeekLBA(f, 0) || FileReadAdv(f, rom, size) != (int)size) {
 		printf("SNES: read failed\n");
 		free(rom);
 		return NULL;
@@ -522,7 +531,7 @@ void snes_msu_init(const char* name)
 	if (size && size < 0x1F200000)
 	{
 		msu_send_command((0x20600000ULL << 16) | MSU_DATA_BASE);
-		user_io_file_tx(SelectedPath, 3, 0, 0, 0, 0x20600000);
+		has_cd = user_io_file_tx(SelectedPath, 3, 0, 0, 0, 0x20600000) ? 1 : 0;
 	}
 
 	msu_send_command((has_cd << 15) | MSU_CD_SET);

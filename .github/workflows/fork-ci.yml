@@ -20,6 +20,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install host compression headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends zlib1g-dev
       - name: Host regression tests
         run: |
           python3 -m unittest discover -s tests -p upstream_review_tests.py -v
@@ -38,6 +42,7 @@ jobs:
           python3 tests/advanced_bt_guard_regression.py
           python3 tests/mgl_attribute_regression.py
           python3 tests/file_open_bounds_regression.py
+          python3 tests/file_transfer_regression.py
       - name: Install the matching Arm toolchain
         run: |
           url=https://developer.arm.com/-/media/Files/downloads/gnu-a/10.2-2020.11/binrel

@@ -35,7 +35,14 @@ def replace_definition(text, marker, replacement):
 def generate(source, generator):
     definition = generator.definition
     cpp, header, user = source["file_io.cpp"], source["file_io.h"], source["user_io.cpp"]
-    types, production, dispatch = generator.generate(cpp, header, user, source["menu.cpp"], source["support/arcade/mra_loader.h"])
+    types, production, dispatch = generator.generate(cpp, header, user, source["menu.cpp"], source["support/arcade/mra_loader.h"], source["user_io.h"])
+    if "strncpy(last_zip_fname" in cpp:
+        # The pre-x5 cache warning is independently fixed and unrelated to
+        # transfer counts. Historical fixtures use short container paths.
+        cached = definition(cpp, "static int OpenZipfileCached(", "file_io.cpp")
+        production = production.replace(cached,
+            '#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored "-Wstringop-truncation"\n'
+            + cached + '#pragma GCC diagnostic pop\n', 1)
     types += definition(header, "struct gameAssetValidator\n", "file_io.h")
     types += "\n".join(re.findall(r"^#define SCANF_[^\n]+", header, re.M)) + "\n"
     types += "\n".join(re.findall(r"^#define SNES_FILE_[^\n]+", source["support/snes/snes.h"], re.M)) + "\n"
@@ -50,14 +57,30 @@ def generate(source, generator):
         # POSIX hosts. Keep the function intact and isolate this host warning.
         if marker == "int FileSeek(":
             production += '#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored "-Wformat"\n'
+        if marker == "int findGameAsset(":
+            production += "#define findGameAsset production_findGameAsset\n"
         production += definition(cpp, marker, "file_io.cpp")
+        if marker == "int findGameAsset(":
+            production += "#undef findGameAsset\n"
         if marker == "int FileSeek(":
             production += '#pragma GCC diagnostic pop\n'
     transfer = "#define FileReadAdv trace_FileReadAdv\n#define user_io_file_tx production_user_io_file_tx\n"
+    transfer += "#define user_io_file_tx_checked production_user_io_file_tx_checked\n"
+    if "UserIoFileTxResult user_io_file_tx_checked(" in user:
+        transfer += definition(user, "UserIoFileTxResult user_io_file_tx_checked(", "user_io.cpp")
     transfer += definition(user, "int user_io_file_tx(", "user_io.cpp")
+    if "UserIoFileTxResult user_io_file_tx_checked(" not in user:
+        # Only adapt the historical per-call return; its production transfer
+        # still executes and exposes old late-positive behavior to assertions.
+        transfer += "UserIoFileTxResult production_user_io_file_tx_checked(const char *n, unsigned char i, char s, char m, char c, uint32_t a) { return production_user_io_file_tx(n,i,s,m,c,a) ? UserIoFileTxResult::CompletedHostPath : UserIoFileTxResult::RejectedBeforeDownload; }\n"
+    transfer += "#undef user_io_file_tx_checked\n"
     transfer += "#undef user_io_file_tx\n#undef FileReadAdv\n"
     transfer += definition(user, "int user_io_use_cheats(", "user_io.cpp")
     transfer += "static char manual_path[1024] = {};\n#define game_docs_init production_game_docs_init\n"
+    if "void game_docs_clear(" in source["game_docs.cpp"]:
+        transfer += definition(source["game_docs.cpp"], "void game_docs_clear(", "game_docs.cpp")
+    else:
+        transfer += "void game_docs_clear() { manual_path[0] = 0; }\n"
     for marker in ("void game_docs_init(", "int game_docs_manual_available(", "const char *game_docs_get_manual("):
         transfer += definition(source["game_docs.cpp"], marker, "game_docs.cpp")
     transfer += "#undef game_docs_init\n"
@@ -68,6 +91,10 @@ def generate(source, generator):
     transfer += "static int loaded=0, cheat_unit_size=16, cheat_max_active=128, iSelectedEntry=0, iFirstEntry=0;\nstatic char cheat_zip[1024] = {};\n"
     transfer += "int cheats_available(); void cheats_scan(int);\n"
     transfer += definition(cheats, "static int cheat_zip_validator(", "cheats.cpp")
+    if "void cheats_clear(" in cheats:
+        transfer += definition(cheats, "void cheats_clear(", "cheats.cpp")
+    else:
+        transfer += "void cheats_clear(bool) { cheats.clear(); loaded=0; cheat_zip[0]=0; }\n"
     transfer += "#define cheats_init production_cheats_init\n"
     transfer += definition(cheats, "void cheats_init(", "cheats.cpp")
     transfer += "#undef cheats_init\n"
@@ -77,6 +104,9 @@ def generate(source, generator):
     fixture = fixture[:fixture.index("\nstatic int failures = 0, checks = 0;")]
     fixture = fixture.replace("bool is_arcade() { return false; }", "bool is_arcade() { return false; }\nbool is_psx(); bool is_megacd(); bool pcecd_using_cd(); const char *psx_get_game_id();")
     for marker, replacement in {
+        "UserIoFileTxResult user_io_file_tx_checked(": "UserIoFileTxResult user_io_file_tx_checked(const char *, unsigned char, char, char, char, uint32_t);",
+        "void game_docs_clear(": "void game_docs_clear();",
+        "void cheats_clear(": "void cheats_clear(bool);",
         "int user_io_file_tx(": "int user_io_file_tx(const char *, unsigned char, char, char, char, uint32_t);",
         "int user_io_file_mount(": "int user_io_file_mount(const char *, unsigned char, char pre=0, int pre_size=0);",
         "void user_io_set_index(": "void user_io_set_index(int);",
@@ -139,7 +169,7 @@ def main():
     parser.add_argument("--source-ref")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    names = ("file_io.cpp", "file_io.h", "user_io.cpp", "menu.cpp", "game_docs.cpp", "cheats.cpp",
+    names = ("file_io.cpp", "file_io.h", "user_io.cpp", "user_io.h", "menu.cpp", "game_docs.cpp", "cheats.cpp",
              "support/arcade/mra_loader.h", "support/snes/snes.h")
     source = {name: subprocess.check_output(["git", "-C", str(ROOT), "show", f"{args.source_ref}:{name}"], text=True, encoding="utf-8")
               if args.source_ref else (ROOT / name).read_text(encoding="utf-8") for name in names}

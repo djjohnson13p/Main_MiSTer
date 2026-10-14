@@ -6,11 +6,13 @@
 #define SNES_FILE_SPC		2
 #define SNES_FILE_BS		3
 
+// NULL on allocation, seek or incomplete source read; otherwise static header.
 uint8_t* snes_get_header(fileTYPE *f);
 void snes_patch_bs_header(fileTYPE *f, uint8_t *buf);
 void snes_msu_init(const char* name);
 void snes_poll(void);
 // Returns a malloc'd buffer of *out_size bytes; caller must free(). Returns NULL on failure.
+// NULL on allocation, seek, incomplete read or an empty post-copier body.
 uint8_t* snes_get_mirrored_rom(fileTYPE *f, uint32_t *out_size);
 
 #endif

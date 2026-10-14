@@ -37,7 +37,7 @@ MGL_ZIP_UNSUPPORTED, MGL_ZIP_AMBIGUOUS, MGL_ZIP_INVALID_ARCHIVE,
 MGL_ZIP_INVALID_PATH, MGL_ZIP_PATH_TOO_LONG };\n"""
 
 
-def generate(cpp, header, user, menu, mgl_header):
+def generate(cpp, header, user, menu, mgl_header, user_header=None):
     types = "struct fileZipArchive;\n" + definition(header, "struct fileTYPE\n", "file_io.h")
     types += definition(header, "struct direntext_t\n", "file_io.h")
     types += definition(cpp, "struct fileZipArchive\n", "file_io.cpp")
@@ -49,6 +49,14 @@ def generate(cpp, header, user, menu, mgl_header):
     types += "\n".join(re.findall(r"^#define (?:SCANO_|SAVE_DIR|SAVESTATE_DIR)[^\n]+", header, re.MULTILINE)) + "\n"
     types += definition(mgl_header, "struct mgl_item_struct\n", "mra_loader.h")
     types += definition(mgl_header, "struct mgl_struct\n", "mra_loader.h")
+    # Historical int-only callers still run unchanged. The current fixture API
+    # uses the actual checked-result declaration for its peripheral boundary.
+    user_header = user_header or (ROOT / "user_io.h").read_text(encoding="utf-8")
+    if "enum class UserIoFileTxResult" not in user_header:
+        user_header = (ROOT / "user_io.h").read_text(encoding="utf-8")
+    types += definition(user_header, "enum class UserIoFileTxResult", "user_io.h")
+    for marker in ("user_io_file_tx_checked", "user_io_file_tx"):
+        types += re.search(r"^(?:UserIoFileTxResult|int) " + marker + r"\([^\n]+", user_header, re.M).group() + "\n"
     types += "\n".join(re.findall(r"^#define MGL_ACTION_[^\n]+", mgl_header, re.MULTILINE)) + "\n"
     present = "MglZipFallbackResult FileResolveMglZipFallback(" in cpp
     types += definition(header, "enum MglZipFallbackResult\n", "file_io.h") if present else RESULT_ENUM
@@ -154,7 +162,7 @@ def main():
             return subprocess.check_output(["git", "-C", str(ROOT), "show", f"{args.source_ref}:{name}"], text=True, encoding="utf-8")
         return (ROOT / name).read_text(encoding="utf-8")
     types, production, dispatch = generate(read("file_io.cpp"), read("file_io.h"), read("user_io.cpp"),
-                                            read("menu.cpp"), read("support/arcade/mra_loader.h"))
+                                            read("menu.cpp"), read("support/arcade/mra_loader.h"), read("user_io.h"))
     cc = [args.cc] if Path(args.cc).is_file() else shlex.split(args.cc)
     cxx = [args.cxx] if Path(args.cxx).is_file() else shlex.split(args.cxx)
     environment = os.environ.copy()

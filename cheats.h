@@ -2,6 +2,7 @@
 #define CHEATS_H
 
 void cheats_init(const char *rom_path, uint32_t romcrc);
+void cheats_clear(bool reset_core = true);
 int cheats_available();
 void cheats_scan(int mode);
 void cheats_scroll_name();

@@ -993,14 +993,15 @@ static void parse_config()
 					{
 						idx = p[idx] - '0';
 						StoreIdx_F(idx, str);
-						user_io_file_tx(str, (user_io_ext_idx(str, ext) << 6) | idx, opensave, 0, 0, load_addr);
-						if (!idx) boot0_loaded = 1;
-
+						bool boot_critical = !idx;
 						if (is_cpc())
 						{
 							char *p = strrchr(str, '.');
-							if (p && (!strcasecmp(p, ".eZZ") || !strcasecmp(p, ".eZ0"))) boot0_loaded = 1;
+							if (p && (!strcasecmp(p, ".eZZ") || !strcasecmp(p, ".eZ0"))) boot_critical = true;
 						}
+						UserIoFileTxResult result = user_io_file_tx_checked(str, (user_io_ext_idx(str, ext) << 6) | idx, opensave, 0, 0, load_addr);
+						if (boot_critical && result != UserIoFileTxResult::RejectedBeforeDownload)
+							boot0_loaded = result == UserIoFileTxResult::CompletedHostPath;
 					}
 				}
 			}
@@ -2788,25 +2789,28 @@ int user_io_file_tx_a(const char* name, uint16_t index)
 	return 1;
 }
 
-int user_io_file_tx(const char* name, unsigned char index, char opensave, char mute, char composite, uint32_t load_addr)
+UserIoFileTxResult user_io_file_tx_checked(const char* name, unsigned char index, char opensave, char mute, char composite, uint32_t load_addr)
 {
 	fileTYPE f = {};
 	static uint8_t buf[4096];
 
-	if (!FileOpen(&f, name, mute)) return 0;
-
-	uint32_t bytes2send = f.size;
+	if (!FileOpen(&f, name, mute)) return UserIoFileTxResult::RejectedBeforeDownload;
+	if (f.size < 0) return UserIoFileTxResult::RejectedBeforeDownload;
+	uint64_t payload_size = f.size;
 
 	if (composite)
 	{
-		if (!FileReadSec(&f, buf)) return 0;
-		if (memcmp(buf, "MiSTer", 6)) return 0;
-
-		uint32_t off = 16 + *(uint32_t*)(((uint8_t*)buf) + 12);
-		bytes2send -= off;
-
-		FileSeek(&f, off, SEEK_SET);
+		if (FileReadAdv(&f, buf, 16) != 16 || memcmp(buf, "MiSTer", 6))
+			return UserIoFileTxResult::RejectedBeforeDownload;
+		uint32_t extra;
+		memcpy(&extra, buf + 12, sizeof(extra));
+		uint64_t off = 16ULL + extra;
+		if (off > (uint64_t)f.size || !FileSeek(&f, off, SEEK_SET))
+			return UserIoFileTxResult::RejectedBeforeDownload;
+		payload_size -= off;
 	}
+	if (payload_size > INT_MAX) return UserIoFileTxResult::RejectedBeforeDownload;
+	uint32_t bytes2send = payload_size;
 
 	/* transmit the entire file using one transfer */
 	printf("Selected file %s with %u bytes to send for index %d.%d\n", name, bytes2send, index & 0x3F, index >> 6);
@@ -2826,8 +2830,11 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 	// prepare transmission of new file
 	user_io_set_download(1, load_addr ? bytes2send : 0);
 
+	uint32_t transfer_crc = 0;
+	// Auxiliary files are RAII-owned inside this scope. A failed started path
+	// leaves through the common download/progress cleanup below.
+	bool completed = [&]() -> bool {
 	int dosend = 1;
-	file_crc = 0;
 
 	int snes_file = SNES_FILE_RAW;
 	if (is_snes() && bytes2send && !load_addr)
@@ -2855,49 +2862,52 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 				FileOpen(&fb, user_io_make_filepath(HomeDir(), "bsx_bios.rom")))
 			{
 				printf("Load BSX bios ROM.\n");
-				uint8_t* buf = snes_get_header(&fb);
-				hexdump(buf, 16, 0);
-				user_io_file_tx_data(buf, 512);
+				uint8_t* header = snes_get_header(&fb);
+				if (!header) return false;
+				hexdump(header, 16, 0);
+				user_io_file_tx_data(header, 512);
 
 				//strip original SNES ROM header if present (not used)
 				if ((bytes2send % 1024) == 512)
 				{
 					bytes2send -= 512;
-					FileReadSec(&f, buf);
+					if (FileReadSec(&f, buf) != 512) return false;
 				}
 
+				if (fb.size < 0 || fb.size > INT_MAX) return false;
 				uint32_t sz = fb.size;
 				while (sz)
 				{
-					uint32_t chunk = (sz > sizeof(buf)) ? sizeof(buf) : sz;
-					FileReadAdv(&fb, buf, chunk);
-					user_io_file_tx_data(buf, chunk);
+					// Preserve the existing auxiliary header-buffer chunk size.
+					uint32_t chunk = (sz > sizeof(header)) ? sizeof(header) : sz;
+					if (FileReadAdv(&fb, header, chunk) != (int)chunk) return false;
+					user_io_file_tx_data(header, chunk);
 					sz -= chunk;
 				}
 				FileClose(&fb);
 			}
 			else
 			{
-				dosend = 0;
 				Info("Cannot open bsx_bios.rom!");
 				sleep(1);
+				return false;
 			}
 		}
 		else if (snes_file == SNES_FILE_SPC) {
 			printf("Load SPC ROM.\n");
-			FileReadSec(&f, buf);
+			if (FileReadSec(&f, buf) < 256) return false;
 			user_io_file_tx_data(buf, 256);
 
-			FileSeek(&f, (64*1024)+256, SEEK_SET);
-			FileReadSec(&f, buf);
+			if (!FileSeek(&f, (64*1024)+256, SEEK_SET) || FileReadSec(&f, buf) < 256) return false;
 			user_io_file_tx_data(buf, 256);
 
-			FileSeek(&f, 256, SEEK_SET);
+			if (!FileSeek(&f, 256, SEEK_SET)) return false;
 			bytes2send = 64 * 1024;
 		}
 		else if (snes_file == SNES_FILE_ROM) {
 			printf("Load SNES ROM.\n");
 			uint8_t* buf = snes_get_header(&f);
+			if (!buf) return false;
 			hexdump(buf, 16, 0);
 			user_io_file_tx_data(buf, 512);
 
@@ -2905,7 +2915,7 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 			uint8_t *rom = snes_get_mirrored_rom(&f, &rom_size);
 			if (rom) {
 				uint32_t orig_size = (f.size & 512) ? f.size - 512 : f.size;
-				file_crc = crc32(0, rom, orig_size);
+				transfer_crc = crc32(0, rom, orig_size);
 
 				uint32_t remaining = rom_size;
 				uint32_t sent = 0;
@@ -2919,6 +2929,7 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 				}
 				free(rom);
 			}
+			else return false;
 			dosend = 0;
 		}
 	}
@@ -2938,17 +2949,18 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 			fileTYPE fg = {};
 			if (!FileOpen(&fg, user_io_make_filepath(HomeDir(), "goomba.rom")))
 			{
-				dosend = 0;
 				Info("Cannot open goomba.rom!");
 				sleep(1);
+				return false;
 			}
 			else
 			{
+				if (fg.size < 0 || fg.size > INT_MAX) return false;
 				uint32_t sz = fg.size;
 				while (sz)
 				{
 					uint32_t chunk = (sz > sizeof(buf)) ? sizeof(buf) : sz;
-					FileReadAdv(&fg, buf, chunk);
+					if (FileReadAdv(&fg, buf, chunk) != (int)chunk) return false;
 					user_io_file_tx_data(buf, chunk);
 					sz -= chunk;
 				}
@@ -2961,12 +2973,12 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 	{
 		const char *ext = strrchr(f.name, '.');
 		if (ext && !strcasecmp(ext, ".UEF")) {
-			UEF_FileSend(&f,use_progress);
+			if (!UEF_FileSend(&f,use_progress)) return false;
 			dosend=0;
 		}
 	}
 
-	if (dosend && load_addr >= 0x20000000 && (load_addr + bytes2send) <= 0x40000000)
+	if (dosend && load_addr >= 0x20000000 && ((uint64_t)load_addr + bytes2send) <= 0x40000000)
 	{
 		uint32_t map_size = bytes2send + ((is_snes() && load_addr < 0x22000000) ? 0x800000 : 0);
 		uint8_t *mem = (uint8_t *)shmem_map(fpga_mem(load_addr), map_size);
@@ -2977,9 +2989,13 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 				uint32_t gap = (is_snes() && (load_addr < 0x22000000) && (load_addr + size - bytes2send) >= 0x22000000) ? 0x800000 : 0;
 
 				uint32_t chunk = (bytes2send > (256 * 1024)) ? (256 * 1024) : bytes2send;
-				FileReadAdv(&f, mem + size - bytes2send + gap, chunk);
+				if (FileReadAdv(&f, mem + size - bytes2send + gap, chunk) != (int)chunk)
+				{
+					shmem_unmap(mem, map_size);
+					return false;
+				}
 
-				if(!is_snes() && use_cheats) file_crc = crc32(file_crc, mem + skip + size - bytes2send, chunk - skip);
+				if(!is_snes() && use_cheats) transfer_crc = crc32(transfer_crc, mem + skip + size - bytes2send, chunk - skip);
 				skip = 0;
 
 				if (use_progress) ProgressMessage("Loading", f.name, size - bytes2send, size);
@@ -2988,6 +3004,7 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 
 			shmem_unmap(mem, map_size);
 		}
+		else if (bytes2send) return false;
 	}
 	else
 	{
@@ -2995,7 +3012,7 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 		{
 			uint32_t chunk = (bytes2send > sizeof(buf)) ? sizeof(buf) : bytes2send;
 
-			FileReadAdv(&f, buf, chunk);
+			if (FileReadAdv(&f, buf, chunk) != (int)chunk) return false;
 			if (is_snes() && (snes_file == SNES_FILE_BS)) snes_patch_bs_header(&f, buf);
 			user_io_file_tx_data(buf, chunk);
 
@@ -3005,11 +3022,24 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 			if (skip >= chunk) skip -= chunk;
 			else
 			{
-				file_crc = crc32(file_crc, buf + skip, chunk - skip);
+				transfer_crc = crc32(transfer_crc, buf + skip, chunk - skip);
 				skip = 0;
 			}
 		}
 	}
+	return true;
+	}();
+
+	if (!completed)
+	{
+		file_crc = 0;
+		FileClose(&f);
+		user_io_set_download(0);
+		ProgressMessage(0, 0, 0, 0);
+		printf("File transfer incomplete: %s\n", name);
+		return UserIoFileTxResult::IncompleteAfterStart;
+	}
+	file_crc = transfer_crc;
 
 	// check if core requests some change while downloading
 	check_status_change();
@@ -3046,8 +3076,14 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 	}
 
 	mdplus_init(name); // MD+ CDDA init
+	// Restore this call's CRC after optional nested media transfers.
+	file_crc = transfer_crc;
+	return UserIoFileTxResult::CompletedHostPath;
+}
 
-	return 1;
+int user_io_file_tx(const char* name, unsigned char index, char opensave, char mute, char composite, uint32_t load_addr)
+{
+	return user_io_file_tx_checked(name, index, opensave, mute, composite, load_addr) == UserIoFileTxResult::CompletedHostPath;
 }
 
 static char cfgstr[1024 * 10] = {};

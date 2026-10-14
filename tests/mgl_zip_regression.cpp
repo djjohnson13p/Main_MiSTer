@@ -66,6 +66,8 @@ int FileSaveConfig(const char *name, const void *value, int) { calls.push_back({
 void process_addon(const char *, int index) { calls.push_back({"addon", "", index}); }
 void game_docs_init(const char *name, uint32_t) { calls.push_back({"docs", name, 0}); }
 void cheats_init(const char *name, uint32_t) { calls.push_back({"cheats", name, 0}); }
+void game_docs_clear() { calls.push_back({"docs-clear", "", 0}); }
+void cheats_clear(bool) { calls.push_back({"cheats-clear", "", 0}); }
 bool user_io_use_cheats() { return true; }
 uint32_t user_io_get_file_crc() { return file_crc; }
 int user_io_file_tx(const char *name, unsigned char index, char save, char mute, char, uint32_t)
@@ -84,13 +86,17 @@ int user_io_file_tx(const char *name, unsigned char index, char save, char mute,
     }
     return 1;
 }
+UserIoFileTxResult user_io_file_tx_checked(const char *name, unsigned char index, char save, char mute, char composite, uint32_t address)
+{
+    return user_io_file_tx(name, index, save, mute, composite, address) ? UserIoFileTxResult::CompletedHostPath : UserIoFileTxResult::RejectedBeforeDownload;
+}
 int user_io_file_mount(const char *name, unsigned char index)
 {
     ++mount_calls; mounted_path = name;
     return FileOpenEx(&mounted[index], name, FileCanWrite(name) ? O_RDWR : O_RDONLY, 1, 1);
 }
 void user_io_set_index(int index) { calls.push_back({"index", "", index}); }
-void Info(const char *, int = 0) {}
+void Info(const char *message, int = 0) { calls.push_back({"info", message, 0}); }
 bool is_pce() { return false; }
 bool is_n64() { return false; }
 bool is_c64() { return false; }

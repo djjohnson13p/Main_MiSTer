@@ -8,9 +8,14 @@
 
 static char manual_path[1024] = {};
 
-void game_docs_init(const char *rom_path, uint32_t romcrc)
+void game_docs_clear()
 {
 	manual_path[0] = 0;
+}
+
+void game_docs_init(const char *rom_path, uint32_t romcrc)
+{
+	game_docs_clear();
 
 	char manuals_dir[1024];
 	snprintf(manuals_dir, sizeof(manuals_dir), "%s", user_io_get_core_name2());

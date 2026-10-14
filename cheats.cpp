@@ -134,22 +134,29 @@ void cheats_finalize_arcade()
 }
 
 
-void cheats_init(const char *rom_path, uint32_t romcrc)
+void cheats_clear(bool reset_core)
 {
 	cheats.clear();
 	loaded = 0;
+	iSelectedEntry = 0;
+	iFirstEntry = 0;
 	cheat_unit_size = 16;
 	cheat_max_active = 128;
 	cheat_zip[0] = 0;
 
 	// reset cheats
-	if (!is_n64())
+	if (reset_core && !is_n64())
 	{
 		user_io_set_index(255);
 		user_io_set_download(1);
 		user_io_file_tx_data((const uint8_t*)&loaded, 2);
 		user_io_set_download(0);
 	}
+}
+
+void cheats_init(const char *rom_path, uint32_t romcrc)
+{
+	cheats_clear(true);
 
 	char core_dir[1024];
 	snprintf(core_dir, sizeof(core_dir), "%s/cheats/%s", getRootDir(), CoreName2);

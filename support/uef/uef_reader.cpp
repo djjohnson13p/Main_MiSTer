@@ -58,228 +58,122 @@ typedef struct {
     uint32_t    pre_carrier;
 } __attribute__((packed)) ChunkInfo;
 
-// TODO - allocate this as part of the desc structure
-static ChunkInfo s_ChunkData = { 0,0,0,0,0,0 };
+// A send owns its parser cache and error state; no failed read becomes padding.
+struct UefReadContext {
+    FILE *file;
+    uint32_t size;
+    uint32_t bits;
+    bool error;
+    ChunkInfo chunk;
+};
 
-
-
-static uint16_t ReadChunkHeader(FILE* f, ChunkInfo* chunk)
+static bool UefSeek(UefReadContext &ctx, uint32_t offset)
 {
-    chunk->id = -1;
-    chunk->length = 0;
-
-    if (fread(chunk, 1, UEF_ChunkHeaderSize, f) != UEF_ChunkHeaderSize) {
-        return (-1);
-    }
-
-    //fprintf(stderr, "ReadChunkHeader: chunk->id %d chunk->length %d\n", chunk->id,chunk->length);
-    return chunk->id;
+    if (offset > ctx.size || fseek(ctx.file, offset, SEEK_SET)) ctx.error = true;
+    return !ctx.error;
 }
 
-static ChunkInfo* GetChunkAtPosFile(FILE *f, uint32_t* p_bit_pos)
+static bool UefRead(UefReadContext &ctx, void *data, size_t length)
+{
+    long pos = ftell(ctx.file);
+    if (pos < 0 || (uint64_t)pos + length > ctx.size || fread(data, 1, length, ctx.file) != length)
+        ctx.error = true;
+    return !ctx.error;
+}
+
+static ChunkInfo* GetChunkAtPosFile(UefReadContext &ctx, uint32_t* p_bit_pos)
 {
     uint32_t bit_pos = *p_bit_pos;
-    uint8_t length_check = (bit_pos == 0xffffffff);
-    ChunkInfo* chunk = &s_ChunkData;
-
-    //fprintf(stderr, "Find pos : %d\n", bit_pos);
-
+    bool length_check = bit_pos == UINT32_MAX;
+    ChunkInfo *chunk = &ctx.chunk;
     if (chunk->bit_offset_start <= bit_pos && bit_pos < chunk->bit_offset_end) {
-        bit_pos -= chunk->bit_offset_start;
-        *p_bit_pos = bit_pos;
+        *p_bit_pos = bit_pos - chunk->bit_offset_start;
         return chunk;
     }
-
     uint32_t chunk_start = 0;
-    uint32_t chunk_bitlen = 0;
-
-    if (chunk->bit_offset_end != 0 && bit_pos >= chunk->bit_offset_end) {
-        fseek(f, chunk->file_offset + chunk->length, SEEK_SET);
+    if (chunk->bit_offset_end && bit_pos >= chunk->bit_offset_end) {
         chunk_start = chunk->bit_offset_end;
         bit_pos -= chunk_start;
-
-    } else {
-        fseek(f, 12, SEEK_SET);     // sizeof(UEF_header)
-    }
-
+        if (!UefSeek(ctx, chunk->file_offset + chunk->length)) return NULL;
+    } else if (!UefSeek(ctx, 12)) return NULL;
     chunk->bit_offset_end = 0;
-
-    while (!feof(f)) {
-        uint16_t id = ReadChunkHeader(f, chunk);
-
-        if (id == (uint16_t) - 1) {
-            break;
-        }
-
-        //fprintf(stderr, "Parse ChunkID : %04x - Length : %4d bytes (%04x) - Offset = %d\n", chunk->id, chunk->length, chunk->length, (uint32_t)ftell(f));
-        chunk->file_offset = ftell(f);
-
-        if (UEF_tapeID == id || UEF_gapID == id || UEF_highToneID == id || UEF_highDummyID == id) {
-
-            if (id == UEF_tapeID) {
-                chunk_bitlen = chunk->length * 10;
-
-            } else if (id == UEF_gapID || id == UEF_highToneID) {
-                uint16_t ms;
-
-                if (fread(&ms, 1, sizeof(ms), f) != sizeof(ms)) {
-                    break;
-                }
-
-                chunk_bitlen = ms * (UEF_Baud / 1000.0);
-                fseek(f, -sizeof(ms), SEEK_CUR);
-
-            } else if (id == UEF_highDummyID) {
-                uint16_t ms;
-
-                if (fread(&ms, 1, sizeof(ms), f) != sizeof(ms)) {
-                    break;
-                }
-
-                chunk->pre_carrier = ms * (UEF_Baud / 1000.0);
-
-                if (fread(&ms, 1, sizeof(ms), f) != sizeof(ms)) {
-                    break;
-                }
-
-                uint32_t post_carrier = ms * (UEF_Baud / 1000.0);
-                chunk_bitlen = chunk->pre_carrier + 20 + post_carrier;
-                fseek(f, -sizeof(ms) * 2, SEEK_CUR);
+    while (!ctx.error) {
+        long position = ftell(ctx.file);
+        if (position < 0) { ctx.error = true; break; }
+        if ((uint32_t)position == ctx.size) break;
+        if (!UefRead(ctx, chunk, UEF_ChunkHeaderSize)) break;
+        chunk->file_offset = position + UEF_ChunkHeaderSize;
+        if (chunk->length > ctx.size - chunk->file_offset) { ctx.error = true; break; }
+        uint64_t chunk_bitlen = 0;
+        uint16_t id = chunk->id;
+        if (id == UEF_tapeID) {
+            chunk_bitlen = (uint64_t)chunk->length * 10;
+        } else if (id == UEF_gapID || id == UEF_highToneID || id == UEF_highDummyID) {
+            uint16_t ms = 0;
+            size_t needed = id == UEF_highDummyID ? 4 : 2;
+            if (chunk->length < needed || !UefRead(ctx, &ms, sizeof(ms))) { ctx.error = true; break; }
+            chunk_bitlen = ms * (UEF_Baud / 1000.0);
+            if (id == UEF_highDummyID) {
+                chunk->pre_carrier = chunk_bitlen;
+                if (!UefRead(ctx, &ms, sizeof(ms))) break;
+                chunk_bitlen += 20 + (uint32_t)(ms * (UEF_Baud / 1000.0));
             }
-
-            if (bit_pos < chunk_bitlen) {
-                chunk->bit_offset_start = chunk_start;
-                chunk->bit_offset_end = chunk_start + chunk_bitlen;
-                break;
-            }
-
-            bit_pos -= chunk_bitlen;
-            chunk_start += chunk_bitlen;
-
         } else if (length_check) {
-
-            if (UEF_infoID == id) {
+            if (id == UEF_infoID) {
                 char buffer[64];
-                uint32_t length = chunk->length;
-
-                while (length > 0) {
-                    uint32_t read_len = length;
-
-                    if (read_len > sizeof(buffer) - 1) {
-                        read_len = sizeof(buffer) - 1;
-                    }
-
-                    if (fread(buffer, 1, read_len, f) != read_len) {
-                        break;
-                    }
-
-                    buffer[read_len] = '\0';
+                uint32_t remaining = chunk->length;
+                while (remaining && !ctx.error) {
+                    uint32_t count = remaining < sizeof(buffer)-1 ? remaining : sizeof(buffer)-1;
+                    if (!UefRead(ctx, buffer, count)) break;
+                    buffer[count] = 0;
                     fprintf(stderr, "Drv02:UEF Info : '%s'", buffer);
-
-                    length -= read_len;
+                    remaining -= count;
                 }
-
-            } else if (UEF_freqChgID == id) {
-                float freq;
-
-                if (fread(&freq, 1, sizeof(freq), f) != sizeof(freq)) {
-                    break;
-                }
-
-                fprintf(stderr, "Drv02:Ignoring base frequency change : %d", (int)freq);
-
-            } else if (UEF_floatGapID == id) {
-                float gap;
-
-                if (fread(&gap, 1, sizeof(gap), f) != sizeof(gap)) {
-                    break;
-                }
-
-                fprintf(stderr, "Drv02:Ignoring floating point gap : %d ms", (int)(gap * 1000.f));
-
-            } else if (UEF_securityID == id) {
-
-                fprintf(stderr, "Drv02:UEF security block ignored");
-
-            } else {
-                fprintf(stderr, "Drv02:Unknown UEF block ID %04x", id);
+            } else if (id == UEF_freqChgID || id == UEF_floatGapID) {
+                float ignored;
+                if (chunk->length < sizeof(ignored) || !UefRead(ctx, &ignored, sizeof(ignored))) ctx.error = true;
             }
-
-            fseek(f, chunk->file_offset, SEEK_SET);
         }
-
-        fseek(f, chunk->length, SEEK_CUR);
+        // Reserve room for the byte-rounding/padding arithmetic.
+        if (chunk_bitlen > UINT32_MAX - 7ULL - chunk_start) { ctx.error = true; break; }
+        if (bit_pos < chunk_bitlen) {
+            chunk->bit_offset_start = chunk_start;
+            chunk->bit_offset_end = chunk_start + chunk_bitlen;
+            *p_bit_pos = bit_pos;
+            return chunk;
+        }
+        bit_pos -= chunk_bitlen;
+        chunk_start += chunk_bitlen;
+        if (!UefSeek(ctx, chunk->file_offset + chunk->length)) break;
     }
-
-    /*DEBUG(1, "OK!");*/
-
+    if (length_check && !ctx.error) ctx.bits = chunk_start;
     *p_bit_pos = bit_pos;
-    return chunk->bit_offset_end ? chunk : 0;
+    return NULL;
 }
 
-static uint8_t GetBitAtPos(FILE *f, uint32_t bit_pos)
+static uint8_t GetBitAtPos(UefReadContext &ctx, uint32_t bit_pos)
 {
-    ChunkInfo* info = GetChunkAtPosFile(f, &bit_pos);
-
-    if (!info) {
-        return 0;
-    }
-
+    if (bit_pos >= ctx.bits) return 0; // Valid last-byte padding.
+    ChunkInfo *info = GetChunkAtPosFile(ctx, &bit_pos);
+    if (!info) { ctx.error = true; return 0; }
     uint16_t id = info->id;
-
-    if (id == UEF_gapID) {
-        return 0;
-
-    } else if (id == UEF_highToneID) {
-        return 1;
-    }
-
+    if (id == UEF_gapID) return 0;
+    if (id == UEF_highToneID) return 1;
     if (id == UEF_tapeID) {
-
         uint32_t byte_offset = bit_pos / 10;
-        uint32_t bit_offset = bit_pos - byte_offset * 10;
-
-        if (bit_offset == 0) {
-            return UEF_startBit;
-        }
-
-        if (bit_offset == 9) {
-            return UEF_stopBit;
-        }
-
-        uint8_t byte;
-        fseek(f, info->file_offset + byte_offset, SEEK_SET);
-        int ret=fread(&byte, 1, sizeof(byte), f);
-        if (ret<0) fprintf(stderr,"uef: error reading byte\n");
-
-        bit_offset -= 1;        // E (0,7)
-        assert(bit_offset < 8);
-
-        return (byte & (1 << bit_offset)) ? 1 : 0;
+        uint32_t bit_offset = bit_pos % 10;
+        if (bit_offset == 0) return UEF_startBit;
+        if (bit_offset == 9) return UEF_stopBit;
+        uint8_t byte = 0;
+        if (!UefSeek(ctx, info->file_offset + byte_offset) || !UefRead(ctx, &byte, 1)) return 0;
+        return (byte >> (bit_offset - 1)) & 1;
     }
-
-    assert(id == UEF_highDummyID);
-
-    if ((bit_pos < info->pre_carrier) || (bit_pos >= info->pre_carrier + 20)) {
-        return 1;
-    }
-
-    bit_pos -= info->pre_carrier;
-    bit_pos %= 10;
-
-    if (bit_pos == 0) {
-        return UEF_startBit;
-    }
-
-    if (bit_pos == 9) {
-        return UEF_stopBit;
-    }
-
-    bit_pos -= 1;       // E (0,7)
-    assert(bit_pos < 8);
-    uint8_t byte = 'A';
-
-    return (byte & (1 << bit_pos)) ? 1 : 0;
+    if (id != UEF_highDummyID) { ctx.error = true; return 0; }
+    if (bit_pos < info->pre_carrier || bit_pos >= info->pre_carrier + 20) return 1;
+    bit_pos = (bit_pos - info->pre_carrier) % 10;
+    if (bit_pos == 0) return UEF_startBit;
+    if (bit_pos == 9) return UEF_stopBit;
+    return ('A' >> (bit_pos - 1)) & 1;
 }
 
 #define BUFLEN      16384
@@ -289,24 +183,16 @@ static uint8_t GetBitAtPos(FILE *f, uint32_t bit_pos)
 
 static int uef_copy_file(fileTYPE *source, FILE *dest)
 {
-unsigned char in[CHUNK];
-int num_bytes;
-
-
-  do {
-       num_bytes = FileReadAdv(source, in, CHUNK,-1);
-       fprintf(stderr,"fread: %d\n",num_bytes);
-       if (num_bytes<0) {
-           fprintf(stderr,"uef_copy_file: error reading data\n");
-           return -1;
-       }
-       if (fwrite(in, 1, num_bytes, dest) != (size_t)num_bytes || ferror(dest)) {
-           fprintf(stderr,"uef_copy_file: error writing data\n");
-           return -1;
-       }
-   } while (num_bytes!=0);
-
-  return 0;
+    unsigned char in[CHUNK];
+    if (source->offset < 0 || source->offset > source->size) return -1;
+    uint64_t remaining = source->size - source->offset;
+    while (remaining) {
+        int count = remaining > CHUNK ? CHUNK : remaining;
+        if (FileReadAdv(source, in, count, -1) != count || fwrite(in, 1, count, dest) != (size_t)count)
+            return -1;
+        remaining -= count;
+    }
+    return ferror(dest) ? -1 : 0;
 }
 
 /* Decompress from file source to file dest until stream ends or EOF.
@@ -338,12 +224,18 @@ static int uef_inflate_file(fileTYPE *source, FILE *dest)
     /* decompress until deflate stream ends or end of file */
     do {
 
-        int res = FileReadAdv(source, in, CHUNK,-1);
-        strm.avail_in= res;
-        if (res<0) {
+        if (source->offset < 0 || source->offset > source->size) {
             (void)inflateEnd(&strm);
             return Z_ERRNO;
         }
+        uint64_t remaining = source->size - source->offset;
+        int count = remaining > CHUNK ? CHUNK : remaining;
+        int res = count ? FileReadAdv(source, in, count, -1) : 0;
+        if (res != count) {
+            (void)inflateEnd(&strm);
+            return Z_ERRNO;
+        }
+        strm.avail_in = res;
         if (strm.avail_in == 0)
             break;
         strm.next_in = in;
@@ -390,122 +282,45 @@ static int uef_inflate_file(fileTYPE *source, FILE *dest)
     return ret == Z_STREAM_END ? Z_OK : Z_DATA_ERROR;
 }
 
-int UEF_FileSend(fileTYPE *inputfile,int use_progress)
+int UEF_FileSend(fileTYPE *inputfile, int use_progress)
 {
-        uint32_t buf_size=kBufferSize;
-        unsigned char fbuf[kBufferSize];
-        int addr=0;
-
-        typedef struct {
-            char    ueftag[10];
-            uint8_t minor_version;
-            uint8_t major_version;
-        } UEF_header;
-        UEF_header header;
-
-
-
-
-        // the UAE file might be gzipped, if so we need to ungzip it
-        // gzip : 1f 8b
-        if ( FileReadAdv(inputfile, &fbuf,2) !=2)
-        {
-                fprintf(stderr,"error reading 2 bytes of file\n");
-                return 0;
-        }
-        // we need to rewind to the beginning
-        FileSeek(inputfile, 0, SEEK_SET);
-
-        FILE *uncompressed_file= tmpfile();
-
-        // 1f 8b is the gzip magic number
-        if (fbuf[0]==0x1f && fbuf[1]==0x8b) {
-            fprintf(stderr,"UEF is compressed\n");
-            uef_inflate_file(inputfile, uncompressed_file);
-        }
-        else {
-            uef_copy_file(inputfile,uncompressed_file);
-            fprintf(stderr,"UEF is not compressed\n");
-        }
-
-        rewind(uncompressed_file);
-
-        if (fread(&header, 1, sizeof(UEF_header), uncompressed_file) != sizeof(UEF_header)) {
-            fprintf(stderr,"Couldn't read file header\n");
-
-        } else if (memcmp(header.ueftag, "UEF File!\0", sizeof(header.ueftag)) != 0) {
-            fprintf(stderr,"UEF file header mismatch\n");
-            fprintf(stderr,"File compressed?\n");
-
-        } else {
-            fprintf(stderr,"UEF: %s %d %d\n",header.ueftag,header.minor_version,header.major_version);
-
-            // figure out how big the file is
-            fseek(uncompressed_file, 0L, SEEK_END);
-            uint32_t size =ftell(uncompressed_file);
-            fprintf(stderr,"size: %d\n",size);
-            rewind(uncompressed_file);
-//FILE *outfile = fopen("tape.raw","wb");
-
-
-            //
-            //  Read the header to find out how big the audio file should be
-            //
-            memset(&s_ChunkData, 0x00, sizeof(ChunkInfo));
-            uint32_t numbits = 0xffffffff;
-            GetChunkAtPosFile(uncompressed_file,&numbits);
-
-            numbits = ~numbits;
-
-            uint32_t bits_per_second = 1225;
-            fprintf(stderr, "Bit length  : %d\n", numbits);
-            fprintf(stderr, "Wave length : %ds\n", numbits / bits_per_second);
-            fprintf(stderr, "Byte length : %d\n", (numbits + 7) / 8);
-
-            // size is the output size of the file we are creating (or dynamically sending)
-            size= (numbits + 7) / 8;
-            uint32_t  orig_size=size;
-
-            fprintf(stderr,"output size: %d\n",size);
-
-            // clear the header
-            memset(&s_ChunkData, 0x00, sizeof(ChunkInfo));
-            uint32_t tot_size=0;
-            uint32_t cur_size=0;
-            uint32_t act_size=0;
-
-            while (size) {
-                cur_size= size;
-                if (cur_size>  buf_size) cur_size=buf_size;
-                act_size=cur_size;
-                // artifically clamp size to the end of the bit stream
-                if (addr + act_size >  orig_size)
-                   act_size = orig_size  - addr;
-
-               tot_size+=act_size;
-               // this is a very naive conversion, but it'll have to do for now..
-               for (uint32_t pos = 0; pos < act_size; ++pos) {
-                   uint8_t val = 0;
-                   for (uint32_t bit = 0; bit < 8; ++bit) {
-                      val = val << 1;
-                      val = val | GetBitAtPos(uncompressed_file, ((addr + pos) << 3) + bit);
-                   }
-
-                   fbuf[pos] = val;
-               }
-               if (use_progress) ProgressMessage("Loading", inputfile->name, orig_size-size  , orig_size);
-               user_io_file_tx_data(fbuf, act_size);
-               if (act_size!=cur_size)
-                  fprintf(stderr,"truncated?\n");
-//fwrite(fbuf,1,act_size,outfile);
-               size -= cur_size;
-               addr += cur_size;
+    unsigned char fbuf[kBufferSize];
+    if (FileReadAdv(inputfile, fbuf, 2) != 2 || !FileSeek(inputfile, 0, SEEK_SET)) return 0;
+    bool compressed = fbuf[0] == 0x1f && fbuf[1] == 0x8b;
+    FILE *uncompressed_file = tmpfile();
+    if (!uncompressed_file) return 0;
+    bool completed = [&]() -> bool {
+        if (compressed ? uef_inflate_file(inputfile, uncompressed_file) != Z_OK :
+                         uef_copy_file(inputfile, uncompressed_file) != 0) return false;
+        if (fflush(uncompressed_file) || fseek(uncompressed_file, 0, SEEK_END)) return false;
+        long length = ftell(uncompressed_file);
+        if (length < 12 || (uint64_t)length > UINT32_MAX || fseek(uncompressed_file, 0, SEEK_SET)) return false;
+        char header[12];
+        if (fread(header, 1, sizeof(header), uncompressed_file) != sizeof(header) ||
+            memcmp(header, "UEF File!\0", 10)) return false;
+        UefReadContext ctx = { uncompressed_file, (uint32_t)length, 0, false, {} };
+        uint32_t scan = UINT32_MAX;
+        GetChunkAtPosFile(ctx, &scan);
+        if (ctx.error) return false;
+        uint32_t size = (ctx.bits + 7) / 8;
+        uint32_t original_size = size, addr = 0;
+        memset(&ctx.chunk, 0, sizeof(ctx.chunk));
+        while (size) {
+            uint32_t count = size < sizeof(fbuf) ? size : sizeof(fbuf);
+            for (uint32_t pos = 0; pos < count; ++pos) {
+                uint8_t value = 0;
+                for (uint32_t bit = 0; bit < 8; ++bit)
+                    value = (value << 1) | GetBitAtPos(ctx, ((addr + pos) << 3) + bit);
+                fbuf[pos] = value;
+                if (ctx.error) return false;
             }
-         fclose(uncompressed_file);
-
-//fclose(outfile);
-      }
-  return 0;
+            if (use_progress) ProgressMessage("Loading", inputfile->name, original_size-size, original_size);
+            user_io_file_tx_data(fbuf, count);
+            size -= count;
+            addr += count;
+        }
+        return true;
+    }();
+    if (fclose(uncompressed_file)) completed = false;
+    return completed ? 1 : 0;
 }
-
-

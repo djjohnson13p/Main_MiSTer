@@ -41,7 +41,7 @@ def main():
                                            text=True, encoding="utf-8")
         return (ROOT / name).read_text(encoding="utf-8")
 
-    names = ("file_io.cpp", "file_io.h", "user_io.cpp", "menu.cpp", "game_docs.cpp", "cheats.cpp",
+    names = ("file_io.cpp", "file_io.h", "user_io.cpp", "user_io.h", "menu.cpp", "game_docs.cpp", "cheats.cpp",
              "support/arcade/mra_loader.h", "support/arcade/mra_loader.cpp", "support/snes/snes.h",
              "sxmlc.c", "sxmlc.h", "lib/miniz/miniz.c", "lib/miniz/miniz.h")
     source = {name: read(name) for name in names}

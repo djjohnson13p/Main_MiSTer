@@ -27,6 +27,9 @@ bool is_atari5200() { return special_core == 5; }
 bool pcecd_using_cd() { return false; }
 const char *psx_get_game_id() { return nullptr; }
 const char *user_io_get_core_name2() { return CoreName2; }
+static int asset_lookups=0;
+int findGameAsset(char *path,size_t capacity,const char *rom,uint32_t crc,const char *ext,const char *core,const char *pce,gameAssetValidator *validator)
+{ asset_lookups++; return production_findGameAsset(path,capacity,rom,crc,ext,core,pce,validator); }
 int findDocsDir(char *directory, size_t capacity)
 { std::snprintf(directory, capacity, "%s/docs/%s", storage_root.c_str(), CoreName2); return 1; }
 int OsdGetSize() { return 16; }
@@ -72,7 +75,7 @@ uint8_t *snes_get_mirrored_rom(fileTYPE *, uint32_t *) { return nullptr; }
 void snes_patch_bs_header(fileTYPE *, uint8_t *) {}
 void snes_msu_init(const char *) {}
 void mdplus_init(const char *) {}
-void UEF_FileSend(fileTYPE *, int) {}
+int UEF_FileSend(fileTYPE *, int) { return 1; }
 void send_pcolchr(const char *, unsigned char, int) {}
 void hexdump(const void *, int, int) {}
 int trace_FileReadAdv(fileTYPE *file, void *data, int count, int failres = 0)
@@ -92,6 +95,15 @@ int user_io_file_tx(const char *name, unsigned char index, char save, char mute,
     calls.push_back({"tx", name, index}); tx_entry_screenshot = last_filename;
     transfer_return = production_user_io_file_tx(name, index, save, mute, composite, address);
     return transfer_return;
+}
+UserIoFileTxResult production_user_io_file_tx_checked(const char *, unsigned char, char, char, char, uint32_t);
+UserIoFileTxResult user_io_file_tx_checked(const char *name, unsigned char index, char save, char mute, char composite, uint32_t address)
+{
+    tx_calls++; tx_index=index; load_path=name;
+    calls.push_back({"tx", name, index}); tx_entry_screenshot=last_filename;
+    UserIoFileTxResult result=production_user_io_file_tx_checked(name,index,save,mute,composite,address);
+    transfer_return=result == UserIoFileTxResult::CompletedHostPath;
+    return result;
 }
 void game_docs_init(const char *name, uint32_t crc)
 { doc_calls++; last_doc_name = name; last_doc_crc = crc; production_game_docs_init(name, crc); }
@@ -266,25 +278,45 @@ int main(int argc, char **argv)
           "FileLoad byte-count zero must remain shared by valid empty and missing files");
     FileClose(&empty);
 
-    // Positive completion does not guarantee successful hardware/read delivery.
-    // These controls deliberately retain the existing positive API policy.
-    seed(); old = snapshot(); prepare("MapFailure.gba"); load_addr = 0x20000000; selected_case();
-    check(transfer_return == 1 && file_crc == 0 && transfer_bytes.size() == old.bytes,
-          "unavailable mapped-memory peripheral retains existing positive completion without data");
-    check(last_filename == std::string("MapFailure") && doc_calls == old.docs + 1,
-          "late mapped-memory failure remains outside initial-open rejection guard");
-    seed(); old = snapshot(); prepare("GoombaTest.gb"); forced_gba = true; selected_case(); forced_gba = false;
-    check(transfer_return == 1 && file_crc == 0 && transfer_bytes.size() == old.bytes,
-          "actual missing goomba prerequisite retains existing positive completion without data");
-    check(last_filename == std::string("GoombaTest") && doc_calls == old.docs + 1,
-          "late prerequisite failure remains outside initial-open rejection guard");
-    seed(); old = snapshot(); prepare("Truncated.gba"); truncate_path = path("Truncated.gba"); truncate_on_download = true;
-    selected_case();
-    bool unchanged = last_read == 0 && read_before.size() == 4096 && read_before == read_after && transfer_bytes.size() == old.bytes + 4096;
-    for (size_t i = 0; unchanged && i < 4096; i++) unchanged = transfer_bytes[old.bytes + i] == read_before[i];
-    check(transfer_return == 1 && unchanged, "actual zero read after open retains existing positive completion and buffer send");
-    check(last_filename == std::string("Truncated") && doc_calls == old.docs + 1,
-          "late zero-read handling remains outside initial-open rejection guard");
+    // A started failure retires the transfer and clears unknown game identity.
+    for (const char *name : {"MapFailure.gba", "GoombaTest.gb", "Truncated.gba"}) {
+        seed(); old=snapshot(); prepare(name);
+        if (!std::strcmp(name,"MapFailure.gba")) load_addr=0x20000000;
+        if (!std::strcmp(name,"GoombaTest.gb")) forced_gba=true;
+        if (!std::strcmp(name,"Truncated.gba")) { truncate_path=path(name); truncate_on_download=true; }
+        const size_t call_start=calls.size(); const int old_assets=asset_lookups;
+        selected_case(); forced_gba=false;
+        check(transfer_return==0 && file_crc==0 && transfer_bytes.size()==old.bytes,
+              "started failure must reject completion, invalidate CRC and send no failed chunk");
+        check(!last_filename[0] && !game_docs_manual_available() && !cheat_zip[0] && cheats.empty() && !loaded,
+              "started failure must clear screenshot/manual/cheat identity");
+        check(asset_lookups==old_assets && doc_calls==old.docs && cheat_calls==old.cheats && cheat_reset_calls==old.resets+1,
+              "partial clear must reset supported cheats without asset initialization");
+        check(gameid_calls==old.gameids && mount_calls==old.mounts && state_calls==old.states+1,
+              "started failure skips success-only GAMEID/save but retains early savestate attempt");
+        bool reported=false;
+        for(size_t i=call_start;i<calls.size();i++) if(calls[i].name=="info") reported=true;
+        check(reported && script.state==3,"incomplete attempt reports failure and advances selected-case state");
+    }
+
+    for(bool stored : {false,true}) {
+        seed(); old=snapshot(); prepare("MapFailure.gba",true,stored);
+        load_addr=0x20000000; use_cheats=0; std::strcpy(addon,"f1");
+        const int old_assets=asset_lookups, old_addons=addon_calls;
+        selected_case();
+        check(!transfer_return && !file_crc && asset_lookups==old_assets,"partial load never looks up assets at empty name/CRC zero");
+        check(addon_calls==old_addons,"partial generic load does not continue trailing addon");
+        check(cheat_reset_calls==old.resets,"unsupported-cheat partial clear issues no invented engine reset");
+        check(stored ? last_filename==old.screenshot && game_docs_get_manual()==old.manual && loaded==old.loaded_count :
+                       !last_filename[0] && !game_docs_manual_available() && cheats.empty() && !loaded,
+              "store_name suppression retains active identity; otherwise host clear removes identity");
+    }
+    seed(); old=snapshot(); prepare("MapFailure.gba"); load_addr=0x20000000; std::strcpy(addon,"f0");
+    const int old_addons=addon_calls; selected_case();
+    check(addon_calls==old_addons+1,"partial transfer retains pre-addon attempt outside rollback");
+    cheats_clear(false);
+    check(!iSelectedEntry && !iFirstEntry && cheat_unit_size==16 && cheat_max_active==128,
+          "clear-only helper restores host cheat selection and generic limits");
 
     // Specialized API contracts/timing remain outside this generic caller fix.
     for (int core = 1; core <= 5; core++) {

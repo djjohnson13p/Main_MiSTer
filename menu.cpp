@@ -2763,7 +2763,7 @@ void HandleUI(void)
 
 			if (selPath[0])
 			{
-
+				bool generic_incomplete = false;
 				char idx = user_io_ext_idx(selPath, fs_pFileExt) << 6 | ioctl_index;
 				if (addon[0] == 'f' && addon[1] != '1') process_addon(addon, idx);
 
@@ -2831,17 +2831,25 @@ void HandleUI(void)
 					}
 					else
 					{
-						// Keep active metadata if the transfer rejects the initial open.
-						if (user_io_file_tx(selPath, idx, opensave, 0, 0, load_addr) && !store_name)
+						UserIoFileTxResult result = user_io_file_tx_checked(selPath, idx, opensave, 0, 0, load_addr);
+						generic_incomplete = result == UserIoFileTxResult::IncompleteAfterStart;
+						if (result == UserIoFileTxResult::CompletedHostPath && !store_name)
 						{
 							user_io_store_filename(selPath);
 							game_docs_init(selPath, user_io_get_file_crc());
 							if (user_io_use_cheats()) cheats_init(selPath, user_io_get_file_crc());
 						}
+						else if (generic_incomplete && !store_name)
+						{
+							user_io_store_filename("");
+							game_docs_clear();
+							cheats_clear(user_io_use_cheats());
+						}
+						if (generic_incomplete) Info("File transfer incomplete");
 					}
 				}
 
-				if (addon[0] == 'f' && addon[1] == '1') process_addon(addon, idx);
+				if (!generic_incomplete && addon[0] == 'f' && addon[1] == '1') process_addon(addon, idx);
 			}
 			else if(is_atari800() && (ioctl_index == 8 || ioctl_index == 9))
 			{
