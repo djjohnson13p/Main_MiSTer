@@ -2778,9 +2778,9 @@ void HandleUI(void)
 						pcecd_set_image(0, "");
 						pcecd_reset();
 					}
-					if (!store_name) user_io_store_filename(selPath);
 					if (is_n64())
 					{
+						if (!store_name) user_io_store_filename(selPath);
 						uint32_t n64_crc;
 						if (!n64_rom_tx(selPath, idx, load_addr, n64_crc))
                 Info("failed to load ROM");
@@ -2792,10 +2792,12 @@ void HandleUI(void)
 					}
 					else if (is_c64() || is_c128())
 					{
+						if (!store_name) user_io_store_filename(selPath);
 						c64_open_file(selPath, idx);
 					}
 					else if (is_atari800() || is_atari5200())
 					{
+						if (!store_name) user_io_store_filename(selPath);
 						if(is_atari800() && ioctl_index != 8 && ioctl_index != 9)
 						{
 							atari800_open_bios_file(selPath, idx);
@@ -2828,9 +2830,10 @@ void HandleUI(void)
 					}
 					else
 					{
-						user_io_file_tx(selPath, idx, opensave, 0, 0, load_addr);
-						if (!store_name)
+						// Keep active metadata if the transfer rejects the initial open.
+						if (user_io_file_tx(selPath, idx, opensave, 0, 0, load_addr) && !store_name)
 						{
+							user_io_store_filename(selPath);
 							game_docs_init(selPath, user_io_get_file_crc());
 							if (user_io_use_cheats()) cheats_init(selPath, user_io_get_file_crc());
 						}
@@ -7424,7 +7427,7 @@ void HandleUI(void)
 			FILE *f = fopen("/MiSTer.version", "r");
 			if (f)
 			{
-				if (fread(str, 6, 1, f)) sprintf(s, "MiSTer v%s, OS v%s", version + 5, str);
+				if (fread(str, 6, 1, f)) sprintf(s, "MiSTer %s, OS %s", version + 5, str);
 				fclose(f);
 			}
 		}
