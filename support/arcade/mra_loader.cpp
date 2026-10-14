@@ -1221,130 +1221,247 @@ static int xml_send_rom(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, cons
 	return true;
 }
 
-static int xml_scan_rbf(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const int n, SAX_Data* sd)
+enum arcade_scalar_kind { ARCADE_SCALAR_NONE, ARCADE_SCALAR_RBF, ARCADE_SCALAR_SETNAME, ARCADE_SCALAR_ROTATION };
+
+struct arcade_scalar_owner {
+	arcade_scalar_kind kind;
+	size_t depth;
+	bool invalid;
+	bool depth_failed;
+};
+
+static arcade_scalar_kind arcade_scalar_type(const char *tag)
 {
-	static int insiderbf = 0;
-	char *rbf = (char *)sd->user;
+	if (!strcasecmp(tag, "rbf")) return ARCADE_SCALAR_RBF;
+	if (!strcasecmp(tag, "setname")) return ARCADE_SCALAR_SETNAME;
+	if (!strcasecmp(tag, "rotation")) return ARCADE_SCALAR_ROTATION;
+	return ARCADE_SCALAR_NONE;
+}
 
-	switch (evt)
+// Count only an owned scalar's real boundaries, not the document's tag stack.
+static bool arcade_scalar_start(arcade_scalar_owner &owner, arcade_scalar_kind kind)
+{
+	if (owner.depth)
 	{
-	case XML_EVENT_START_DOC:
-		insiderbf = 0;
-		break;
-
-	case XML_EVENT_START_NODE:
-		if (!strcasecmp(node->tag, "rbf")) insiderbf = 1;
-		break;
-
-	case XML_EVENT_TEXT:
-		if (insiderbf)
-		{
-			insiderbf = 0;
-			strncpy(rbf, text, kBigTextSize);
-		}
-		break;
-
-	case XML_EVENT_END_NODE:
-		insiderbf = 0;
-		break;
-
-	case XML_EVENT_ERROR:
-		printf("XML parse: %s: ERROR %d\n", text, n);
-		break;
-	default:
-		break;
+		owner.invalid = true;
+		if (owner.depth == SIZE_MAX) owner.depth_failed = true;
+		else ++owner.depth;
+		return false;
 	}
-
+	if (kind == ARCADE_SCALAR_NONE) return false;
+	owner = { kind, 1, false, false };
 	return true;
 }
 
-static int xml_read_pre_parse(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const int n, SAX_Data* sd)
+static bool arcade_scalar_close(arcade_scalar_owner &owner, arcade_scalar_kind kind)
 {
-	(void)(sd);
-	static bool insetname = false;
-	static bool inrotation = false;
-	static int  samedir = 0;
+	if (!owner.depth || owner.depth_failed) return false;
+	if (owner.depth == 1 && kind != owner.kind) owner.invalid = true;
+	return --owner.depth == 0;
+}
 
-	static bool foundsetname = false;
-	static bool foundrotation = false;
+static bool arcade_scalar_append(char *out, size_t &used, const char *text, bool reject_overflow)
+{
+	if (used >= kBigTextSize) return false;
+	size_t length = strlen(text);
+	const size_t remaining = kBigTextSize - 1 - used;
+	if (length > remaining)
+	{
+		if (reject_overflow) return false;
+		length = remaining;
+	}
+	if (length) memcpy(out + used, text, length);
+	used += length;
+	out[used] = 0;
+	return true;
+}
+
+struct arcade_rotation_scan {
+	char prefix[9];
+	char suffix[18];
+	size_t prefix_used;
+	size_t suffix_used;
+	bool nonempty;
+	bool seen_ccw;
+};
+
+static void arcade_rotation_append(arcade_rotation_scan &scan, const char *text)
+{
+	for (const char *p = text; *p; ++p)
+	{
+		scan.nonempty = true;
+		if (scan.prefix_used < 8)
+		{
+			scan.prefix[scan.prefix_used++] = *p;
+			scan.prefix[scan.prefix_used] = 0;
+		}
+		if (scan.suffix_used == 17) memmove(scan.suffix, scan.suffix + 1, 16);
+		else ++scan.suffix_used;
+		scan.suffix[scan.suffix_used - 1] = *p;
+		scan.suffix[scan.suffix_used] = 0;
+		if (strstr(scan.suffix, "ccw") || strstr(scan.suffix, "CCW") ||
+		    strstr(scan.suffix, "counterclockwise") || strstr(scan.suffix, "counter-clockwise"))
+			scan.seen_ccw = true;
+	}
+}
+
+struct arcade_rbf_scan {
+	arcade_scalar_owner owner;
+	char pending[kBigTextSize];
+	size_t used;
+	char *output;
+	bool invalid;
+};
+
+static int xml_scan_rbf(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const int n, SAX_Data* sd)
+{
+	arcade_rbf_scan &scan = *(arcade_rbf_scan *)sd->user;
+	if (evt == XML_EVENT_START_NODE)
+	{
+		if (node->tag_type == TAG_CDATA) { evt = XML_EVENT_TEXT; text = node->tag; }
+		else if (node->tag_type != TAG_FATHER && node->tag_type != TAG_SELF) return true;
+	}
+	else if (evt == XML_EVENT_END_NODE && node->tag_type != TAG_END && node->tag_type != TAG_SELF) return true;
 
 	switch (evt)
 	{
 	case XML_EVENT_START_DOC:
-		insetname = false;
-		inrotation = false;
-		foundsetname = false;
-		foundrotation = false;
-		samedir = 0;
-		rotation_dir = 0;
+	{
+		char *output = scan.output;
+		scan = {};
+		scan.output = output;
+		scan.output[0] = 0;
 		break;
-
+	}
 	case XML_EVENT_START_NODE:
-		if (!strcasecmp(node->tag, "setname"))
+		if (arcade_scalar_start(scan.owner, arcade_scalar_type(node->tag) == ARCADE_SCALAR_RBF ? ARCADE_SCALAR_RBF : ARCADE_SCALAR_NONE))
 		{
-			insetname = true;
-			foundsetname = true;
-
-			for (int i = 0; i < node->n_attributes; i++)
-			{
-				if (!strcasecmp(node->attributes[i].name, "same_dir") && !strcmp(node->attributes[i].value, "1")) samedir = 1;
-			}
+			scan.used = 0;
+			scan.pending[0] = 0;
 		}
-		else if (!strcasecmp(node->tag, "rotation"))
-		{
-			inrotation = true;
-			foundrotation = true;
-		}
+		if (scan.owner.invalid) scan.invalid = true;
 		break;
-
 	case XML_EVENT_TEXT:
-		if(insetname)
-		{
-			user_io_name_override(text, samedir);
-			// Capture setname for game ID
-			snprintf(arcade_setname, sizeof(arcade_setname), "%s", text);
-		}
-		if(inrotation)
-		{
-			is_vertical = strncasecmp(text, "vertical", 8) == 0;
-
-			rotation_dir = 0;
-			if (is_vertical)
-			{
-				// Check for CCW first (must check before CW since "ccw" contains "cw")
-				if (strstr(text, "ccw") || strstr(text, "CCW") ||
-				    strstr(text, "counterclockwise") || strstr(text, "counter-clockwise"))
-				{
-					rotation_dir = 2;
-				}
-				// Then check for CW
-				else if (strstr(text, "cw") || strstr(text, "CW") ||
-				         strstr(text, "clockwise"))
-				{
-					rotation_dir = 1;
-				}
-				// Default to CW if no direction specified
-				else
-				{
-					rotation_dir = 1; // Fallback to CW if no direction is declared
-				}
-			}
-		}
+		if (scan.owner.depth && !scan.owner.invalid && !arcade_scalar_append(scan.pending, scan.used, text, true))
+			scan.invalid = scan.owner.invalid = true;
 		break;
-
 	case XML_EVENT_END_NODE:
-		insetname = false;
-		inrotation = false;
-		if (foundrotation && foundsetname) return false;
+		if (!scan.owner.depth)
+		{
+			if (arcade_scalar_type(node->tag) == ARCADE_SCALAR_RBF) scan.invalid = true;
+		}
+		else if (arcade_scalar_close(scan.owner, arcade_scalar_type(node->tag)))
+		{
+			if (scan.owner.invalid) scan.invalid = true;
+			else if (scan.used) memcpy(scan.output, scan.pending, scan.used + 1);
+			scan.owner = {};
+		}
 		break;
-
 	case XML_EVENT_ERROR:
 		printf("XML parse: %s: ERROR %d\n", text, n);
+		scan.invalid = true;
+		break;
+	case XML_EVENT_END_DOC:
+		if (scan.owner.depth) scan.invalid = true;
+		scan.owner = {};
 		break;
 	default:
 		break;
 	}
+	return true;
+}
 
+struct arcade_preparse_scan {
+	arcade_scalar_owner owner;
+	char setname[kBigTextSize];
+	size_t used;
+	arcade_rotation_scan rotation;
+	int samedir;
+	int captured_same;
+	bool foundsetname;
+	bool foundrotation;
+};
+
+static int xml_read_pre_parse(XMLEvent evt, const XMLNode* node, SXML_CHAR* text, const int n, SAX_Data* sd)
+{
+	arcade_preparse_scan &scan = *(arcade_preparse_scan *)sd->user;
+	if (evt == XML_EVENT_START_NODE)
+	{
+		if (node->tag_type == TAG_CDATA) { evt = XML_EVENT_TEXT; text = node->tag; }
+		else if (node->tag_type != TAG_FATHER && node->tag_type != TAG_SELF) return true;
+	}
+	else if (evt == XML_EVENT_END_NODE && node->tag_type != TAG_END && node->tag_type != TAG_SELF) return true;
+
+	switch (evt)
+	{
+	case XML_EVENT_START_DOC:
+		scan = {};
+		rotation_dir = 0;
+		break;
+	case XML_EVENT_START_NODE:
+	{
+		arcade_scalar_kind kind = arcade_scalar_type(node->tag);
+		if (kind == ARCADE_SCALAR_SETNAME)
+		{
+			for (int i = 0; i < node->n_attributes; ++i)
+				if (!strcasecmp(node->attributes[i].name, "same_dir") && !strcmp(node->attributes[i].value, "1")) scan.samedir = 1;
+		}
+		if (kind != ARCADE_SCALAR_SETNAME && kind != ARCADE_SCALAR_ROTATION) kind = ARCADE_SCALAR_NONE;
+		if (arcade_scalar_start(scan.owner, kind))
+		{
+			scan.used = 0;
+			scan.setname[0] = 0;
+			scan.rotation = {};
+			scan.captured_same = scan.samedir;
+		}
+		break;
+	}
+	case XML_EVENT_TEXT:
+		if (scan.owner.depth && !scan.owner.invalid)
+		{
+			if (scan.owner.kind == ARCADE_SCALAR_SETNAME)
+			{
+				if (!arcade_scalar_append(scan.setname, scan.used, text, false)) scan.owner.invalid = true;
+			}
+			else arcade_rotation_append(scan.rotation, text);
+		}
+		break;
+	case XML_EVENT_END_NODE:
+		if (arcade_scalar_close(scan.owner, arcade_scalar_type(node->tag)))
+		{
+			const bool valid = !scan.owner.invalid;
+			if (valid && scan.owner.kind == ARCADE_SCALAR_SETNAME)
+			{
+				if (scan.used)
+				{
+					user_io_name_override(scan.setname, scan.captured_same);
+					memcpy(arcade_setname, scan.setname, scan.used + 1);
+				}
+				scan.foundsetname = true;
+			}
+			else if (valid)
+			{
+				if (scan.rotation.nonempty)
+				{
+					is_vertical = scan.rotation.prefix_used == 8 && !strncasecmp(scan.rotation.prefix, "vertical", 8);
+					rotation_dir = is_vertical ? (scan.rotation.seen_ccw ? 2 : 1) : 0;
+				}
+				scan.foundrotation = true;
+			}
+			scan.owner = {};
+			if (valid && scan.foundsetname && scan.foundrotation) return false;
+		}
+		break;
+	case XML_EVENT_ERROR:
+		printf("XML parse: %s: ERROR %d\n", text, n);
+		scan.owner = {};
+		break;
+	case XML_EVENT_END_DOC:
+		scan.owner = {};
+		break;
+	default:
+		break;
+	}
 	return true;
 }
 
@@ -1410,7 +1527,8 @@ void arcade_pre_parse(const char *xml)
 	SAX_Callbacks_init(&sax);
 
 	sax.all_event = xml_read_pre_parse;
-	XMLDoc_parse_file_SAX(xml, &sax, NULL);
+	arcade_preparse_scan scan = {};
+	XMLDoc_parse_file_SAX(xml, &sax, &scan);
 }
 
 bool arcade_is_vertical()
@@ -1451,7 +1569,9 @@ static const char *get_rbf(const char *xml, int arcade)
 	SAX_Callbacks_init(&sax);
 
 	sax.all_event = xml_scan_rbf;
-	XMLDoc_parse_file_SAX(xml, &sax, rbfname);
+	arcade_rbf_scan scan = {};
+	scan.output = rbfname;
+	if (!XMLDoc_parse_file_SAX(xml, &sax, &scan) || scan.invalid || scan.owner.depth || !rbfname[0]) return NULL;
 
 	/* once we have the rbfname fragment from the MRA xml file
 	 * search the arcade folder for the match */
