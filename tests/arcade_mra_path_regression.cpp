@@ -46,9 +46,9 @@ static unsigned parser_errors;
 static int core_return=-999;
 static bool core_return_observed;
 static std::vector<std::string> core_messages;
-struct stat64 { long long st_size; };
+struct mra_path_stat64 { long long st_size; };
 typedef int64_t __off64_t;
-static_assert(sizeof(stat64::st_size)==8&&sizeof(__off64_t)==8,"Core fixture signed size types remain64-bit");
+static_assert(sizeof(mra_path_stat64::st_size)==8&&sizeof(__off64_t)==8,"Core fixture signed size types remain64-bit");
 int fpga_load_rbf(const char *,const char *,const char *);
 __attribute__((noinline)) void *operator new(std::size_t size)
 {
@@ -135,7 +135,7 @@ static void fpga_core_reset(int) { throw std::runtime_error("Unexpected FPGA res
 static void make_env(const char *,const char *) { throw std::runtime_error("Unexpected core environment endpoint"); }
 static void do_bridge(int) { throw std::runtime_error("Unexpected FPGA bridge endpoint"); }
 static void reboot(int) { throw std::runtime_error("Unexpected reboot endpoint"); }
-static int path_core_fstat64(int,struct stat64 *) { throw std::runtime_error("Unexpected successful core descriptor"); }
+static int path_core_fstat64(int,struct mra_path_stat64 *) { throw std::runtime_error("Unexpected successful core descriptor"); }
 static int path_core_read(int,void *,size_t) { throw std::runtime_error("Unexpected core read endpoint"); }
 static int path_core_close(int) { throw std::runtime_error("Unexpected core close endpoint"); }
 static int socfpga_load(void *,__off64_t) { throw std::runtime_error("Unexpected physical FPGA load endpoint"); }

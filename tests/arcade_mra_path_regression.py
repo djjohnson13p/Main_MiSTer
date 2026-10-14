@@ -85,7 +85,7 @@ def generate(source):
         production += 'static const char *observed_get_rbf(const char *xml,int arcade,const char *root=nullptr,arcade_path_error *error=nullptr) { const char *out=get_rbf(xml,arcade,root,error); observe_get_rbf(out); return out; }\n'
     else:
         production += 'static const char *observed_get_rbf(const char *xml,int arcade) { const char *out=get_rbf(xml,arcade); observe_get_rbf(out); return out; }\n'
-    production += '#define open path_core_open\n#define fstat64 path_core_fstat64\n#define read path_core_read\n#define close path_core_close\n'+EXTRACT(source['fpga_io.cpp'], 'int fpga_load_rbf(', 'fpga_io.cpp')+'#undef open\n#undef fstat64\n#undef read\n#undef close\n'
+    production += '#define stat64 mra_path_stat64\n#define open path_core_open\n#define fstat64 path_core_fstat64\n#define read path_core_read\n#define close path_core_close\n'+EXTRACT(source['fpga_io.cpp'], 'int fpga_load_rbf(', 'fpga_io.cpp')+'#undef open\n#undef fstat64\n#undef read\n#undef close\n#undef stat64\n'
     production += '#define get_rbf observed_get_rbf\n#define fpga_load_rbf observed_core_handoff\n#define strcpy bounded_xml_copy\n'+EXTRACT(mra, 'int xml_load(', SOURCES[0])+'#undef strcpy\n#undef fpga_load_rbf\n#undef get_rbf\n#undef get_arcade_root\n#undef getRootDir\n#undef arcade_path_fail\n'
     parser = source['sxmlc.c']
     anchor = '#include "sxmlc.h"'
