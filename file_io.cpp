@@ -206,8 +206,8 @@ static int FileIsZipped(char* path, char** zip_path, char** file_path)
 	if (z)
 	{
 		z += 4;
-		if (!z[0]) z[1] = 0;
-		*z++ = 0;
+		// A terminal .zip already has an empty member at its terminator.
+		if (z[0]) *z++ = 0;
 
 		if (zip_path) *zip_path = path;
 		if (file_path) *file_path = z;
@@ -229,6 +229,21 @@ static char* make_fullpath(const char *path, int mode = 0)
 	}
 
 	return full_path;
+}
+
+// Open calls must retain the complete path, including aliased input.
+static int make_fullpath_checked(const char *path, int mode = 0)
+{
+	char resolved[sizeof(full_path)];
+	int length = path[0] == '/' ? snprintf(resolved, sizeof(resolved), "%s", path) :
+		snprintf(resolved, sizeof(resolved), "%s/%s", (mode == -1) ? "" : getRootDir(), path);
+	if (length < 0 || (size_t)length >= sizeof(resolved))
+	{
+		errno = ENAMETOOLONG;
+		return 0;
+	}
+	memcpy(full_path, resolved, (size_t)length + 1);
+	return 1;
 }
 
 static int get_stmode(const char *path)
@@ -403,13 +418,27 @@ static int zip_search_by_crc(mz_zip_archive *zipArchive, uint32_t crc32)
 
 int FileOpenZip(fileTYPE *file, const char *name, uint32_t crc32)
 {
-	make_fullpath(name);
+	int path_valid = make_fullpath_checked(name);
 	FileClose(file);
 	file->mode = 0;
 	file->type = 0;
+	file->name[0] = 0;
+	if (!path_valid)
+	{
+		errno = ENAMETOOLONG;
+		printf("FileOpenZip: path is too long.\n");
+		return 0;
+	}
 
 	char *p = strrchr(full_path, '/');
-	strcpy(file->name, (p) ? p + 1 : full_path);
+	const char *stored_name = p ? p + 1 : full_path;
+	if (strlen(stored_name) >= sizeof(file->name))
+	{
+		errno = ENAMETOOLONG;
+		printf("FileOpenZip: file name is too long.\n");
+		return 0;
+	}
+	strcpy(file->name, stored_name);
 
 	char *zip_path, *file_path;
 	if (!FileIsZipped(full_path, &zip_path, &file_path))
@@ -467,13 +496,27 @@ int FileOpenZip(fileTYPE *file, const char *name, uint32_t crc32)
 
 int FileOpenEx(fileTYPE *file, const char *name, int mode, char mute, int use_zip)
 {
-	make_fullpath((char*)name, mode);
+	int path_valid = make_fullpath_checked(name, mode);
 	FileClose(file);
 	file->mode = 0;
 	file->type = 0;
+	file->name[0] = 0;
+	if (!path_valid)
+	{
+		errno = ENAMETOOLONG;
+		if (!mute) printf("FileOpenEx: path is too long.\n");
+		return 0;
+	}
 
 	char *p = strrchr(full_path, '/');
-	strcpy(file->name, (mode == -1) ? full_path : p + 1);
+	const char *stored_name = (mode == -1 || !p) ? full_path : p + 1;
+	if (strlen(stored_name) >= sizeof(file->name))
+	{
+		errno = ENAMETOOLONG;
+		if (!mute) printf("FileOpenEx: file name is too long.\n");
+		return 0;
+	}
+	strcpy(file->name, stored_name);
 
 	char *zip_path, *file_path;
 	if (use_zip && (mode != -1) && FileIsZipped(full_path, &zip_path, &file_path))

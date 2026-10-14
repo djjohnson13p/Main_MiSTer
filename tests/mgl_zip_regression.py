@@ -53,6 +53,8 @@ def generate(cpp, header, user, menu, mgl_header):
     present = "MglZipFallbackResult FileResolveMglZipFallback(" in cpp
     types += definition(header, "enum MglZipFallbackResult\n", "file_io.h") if present else RESULT_ENUM
     production = f"#define HAVE_MGL_ZIP_HELPER {int(present)}\n"
+    if "static int make_fullpath_checked(" in cpp:
+        production += definition(cpp, "static int make_fullpath_checked(", "file_io.cpp")
     for marker in (
         "static int OpenZipfileCached(", "static int FileIsZipped(", "static char* make_fullpath(",
         "static int get_stmode(", "static int isPathDirectory(", "static int isPathRegularFile(",
