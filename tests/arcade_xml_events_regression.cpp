@@ -183,8 +183,17 @@ int FileReadAdv(fileTYPE *file,void *data,int size,int)
 }
 int FileClose(fileTYPE *file) { handles.erase(file); file->filp=nullptr; file->zip=nullptr; return 0; }
 static struct stat64 *getPathStat(const char*) { static struct stat64 st; st.st_size=document.size(); return &st; }
+#if HAVE_MRA_PATHS
+static int findGamesDir(char *name,size_t capacity)
+{
+    if(capacity!=1024||std::strcmp(name,"mame"))forbidden("root metadata query");
+    events.push_back("find-games:mame"); return 0;
+}
+static void Info(const char*) { forbidden("path admission failure; valid XML fixture"); }
+#else
 static void set_arcade_root(const char *path) { events.push_back(std::string("arcade-root:")+path); }
 static const char *get_arcade_root(int) { forbidden("external ROM root"); return ""; }
+#endif
 static void ProgressMessage(const char* = nullptr,const char* = nullptr,int = 0,int = 0) {}
 static void user_io_write_gameid(const char*,int,const char*) { forbidden("game ID"); }
 static void set_ovr_buttons(const char*,int) { forbidden("buttons"); }

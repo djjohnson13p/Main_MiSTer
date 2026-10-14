@@ -4,7 +4,9 @@
 Historical sprintf/strcat boundaries are intercepted before unsafe writes. A
 trap ends that scenario without inventing a later status or transfer. Synthetic
 invalid-input/private-builder controls are explicitly excluded on prior code.
-The MRA selector is its exact safe prefix, ending before NVRAM/XML/core work.
+The MRA selector uses its exact basename/DIP identity block, after optional
+entry ownership and ending before NVRAM/XML/core work. Entry admission is
+exercised by the separate MRA path and full selector fixtures.
 No user files, real filesystem operations, hardware, or durability are tested.
 """
 import argparse
@@ -129,8 +131,9 @@ def generate(source):
     if not checked:
         production += "#undef strcat\n"
     selector = definition(arcade, "int arcade_send_rom(", "support/arcade/mra_loader.cpp")
+    identity_start = selector.index("\n\tconst char *p = strrchr(xml, '/');") if "std::string owned_xml;" in selector else selector.index("{")
     nvram_start = "\n\tarcade_nvm_reset();" if "\n\tarcade_nvm_reset();" in selector else "\n\tsnprintf(nvram_name"
-    prefix = selector[selector.index("{") + 1:selector.index(nvram_start)]
+    prefix = selector[identity_start + 1:selector.index(nvram_start, identity_start)]
     production += "static void select_arcade_dip_name(const char *xml) {\n" + prefix + "\n}\n"
     return types, production, checked
 

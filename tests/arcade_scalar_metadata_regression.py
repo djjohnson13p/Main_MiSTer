@@ -13,7 +13,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ("support/arcade/mra_loader.cpp", "support/arcade/mra_loader.h",
-           "user_io.cpp", "user_io.h", "sxmlc.c", "sxmlc.h")
+           "user_io.cpp", "user_io.h", "sxmlc.c", "sxmlc.h", "file_io.cpp", "file_io.h")
 SCENARIOS = (
     "rbf-ordinary", "rbf-nonarcade", "rbf-comment", "rbf-pi", "rbf-cdata",
     "rbf-special-names", "rbf-cdata-only", "rbf-repeat", "rbf-empty", "rbf-missing",
@@ -55,13 +55,27 @@ def definition(source, marker, filename):
 def generate(source):
     arcade, user = source[SOURCES[0]], source["user_io.cpp"]
     has_contexts = "struct arcade_rbf_scan {" in arcade
+    mra_paths = "enum arcade_path_error {" in arcade
     types = "#define HAVE_SCALAR_CONTEXTS %d\n" % has_contexts
+    types += "#define HAVE_MRA_PATHS %d\n" % mra_paths
     types += next(line for line in arcade.splitlines() if line.startswith("#define kBigTextSize")) + "\n"
     for marker, text in (("static char arcade_setname", arcade), ("static bool is_vertical", arcade),
                          ("static int rotation_dir", arcade), ("static char ovr_name", user),
                          ("static int  ovr_samedir", user)):
         types += next(line for line in text.splitlines() if line.startswith(marker)) + "\n"
     helpers = ""
+    if mra_paths:
+        types += definition(arcade, "enum arcade_path_error {", SOURCES[0])
+        for marker in ("static char arcade_root", "static char mame_root"):
+            types += next(line for line in arcade.splitlines() if line.startswith(marker)) + "\n"
+        types += next(line for line in source["file_io.h"].splitlines() if line.startswith("int FileResolveFullPath(")) + "\n"
+        helpers += definition(source["file_io.cpp"], "int FileResolveFullPath(", "file_io.cpp")
+        for marker in ("static int arcade_path_fail(", "static int arcade_path_copy(",
+                       "static int arcade_path_copy_root(", "static int arcade_path_join(",
+                       "static int arcade_path_parent(", "static const char *get_arcade_root(",
+                       "static bool arcade_rbf_match("):
+            helpers += definition(arcade, marker, SOURCES[0])
+        helpers += "static const char *observed_arcade_root(int rbf,arcade_path_error *error=nullptr) { ++active->arcade_roots; return get_arcade_root(rbf,error); }\n#define get_arcade_root observed_arcade_root\n"
     if has_contexts:
         for marker in ("enum arcade_scalar_kind {", "struct arcade_scalar_owner {",
                        "struct arcade_rotation_scan {", "struct arcade_rbf_scan {", "struct arcade_preparse_scan {"):
@@ -81,10 +95,15 @@ def generate(source):
     for marker in ("void arcade_pre_parse(", "bool arcade_is_vertical(", "int arcade_get_direction(",
                    "static const char *get_rbf_path("):
         production += definition(arcade, marker, SOURCES[0])
-    production += "static const char *observed_rbf_path(const char *name) { ++active->path_calls; const char *(*volatile call)(const char *)=get_rbf_path; return call(name); }\n#define get_rbf_path observed_rbf_path\n"
+    if mra_paths:
+        production += "static const char *observed_rbf_path(const char *name,const char *root=nullptr,arcade_path_error *error=nullptr) { ++active->path_calls; return get_rbf_path(name,root,error); }\n"
+    else:
+        production += "static const char *observed_rbf_path(const char *name) { ++active->path_calls; const char *(*volatile call)(const char *)=get_rbf_path; return call(name); }\n"
+    production += "#define get_rbf_path observed_rbf_path\n"
     production += "#define opendir fixture_opendir\n#define readdir fixture_readdir\n#define closedir fixture_closedir\n"
     production += definition(arcade, "static const char *get_rbf(", SOURCES[0])
     production += "#undef closedir\n#undef readdir\n#undef opendir\n#undef get_rbf_path\n#undef XMLDoc_parse_file_SAX\n"
+    production += "#undef get_arcade_root\n"
     parser = source["sxmlc.c"]
     point = '#include "sxmlc.h"'
     if parser.count(point) != 1:

@@ -47,6 +47,17 @@ static std::map<fileTYPE *, std::string> opened_files;
 static std::vector<unsigned> spi_bytes;
 static bool fpga_enabled;
 static std::string storage_root = "/media/fat";
+static bool fail_selector_ownership, observe_selector_entry;
+#if HAVE_MRA_PATHS
+static bool unterminated_games;
+#endif
+static unsigned ownership_rejections, parser_calls, buffer_init_calls, buffer_destroy_calls, dip_load_calls, dip_send_calls;
+static size_t ownership_bytes;
+static bool selector_root_capture_observed, selector_root_observed, selector_target_observed, selector_target_prepared;
+static bool selector_ready_before_root, prepared_seen_at_games;
+static int selector_root_capture_return, selector_root_capture_error, selector_root_return, selector_root_error;
+static std::string exclusion_reason;
+static std::vector<std::string> selector_outcomes;
 static const char *getRootDir() { root_calls++; return null_root ? nullptr : storage_root.c_str(); }
 static std::string quote(const std::string &value)
 {
@@ -99,6 +110,10 @@ __attribute__((noinline)) void *operator new[](size_t length)
 }
 __attribute__((noinline)) void *operator new(size_t length)
 {
+    if (fail_selector_ownership) {
+        fail_selector_ownership=false; ownership_rejections++; ownership_bytes=length;
+        throw std::bad_alloc();
+    }
     if (fail_scalar_allocation) throw std::bad_alloc();
     if (void *p = std::malloc(length ? length : 1)) return p;
     throw std::bad_alloc();
@@ -175,6 +190,7 @@ static int observed_xml_callback(XMLEvent event, const XMLNode *node, char *text
 }
 static int observed_parse_file(const char *filename, const SAX_Callbacks *callbacks, void *user)
 {
+    parser_calls++;
     if (callbacks->all_event != xml_send_rom) throw std::runtime_error("Unexpected production SAX callback");
     SAX_Callbacks observed = *callbacks; observed.all_event = observed_xml_callback;
     parser_seen = true;
@@ -288,9 +304,23 @@ int FileReadAdv(fileTYPE *file, void *data, int size, int)
     events.push_back("load-read:" + std::to_string(length)); return static_cast<int>(length);
 }
 int FileClose(fileTYPE *file) { opened_files.erase(file); file->filp = nullptr; file->zip = nullptr; return 0; }
-static struct stat64 *getPathStat(const char *) { static struct stat64 st; st.st_size = document.size(); return &st; }
+static struct stat64 *getPathStat(const char *) { events.push_back("path-stat"); static struct stat64 st; st.st_size = document.size(); return &st; }
+#if HAVE_MRA_PATHS
+static bool prepared_nvram_binding();
+static int findGamesDir(char *name,size_t capacity) {
+    if(capacity!=1024||std::strcmp(name,"mame"))forbidden("root metadata query");
+    events.push_back("find-games:mame");
+    if(unterminated_games) {
+        prepared_seen_at_games=prepared_nvram_binding();
+        std::memset(name,'G',capacity); return 1;
+    }
+    return 0;
+}
+static void Info(const char *message) { events.push_back(std::string("path-info:")+message); }
+#else
 static void set_arcade_root(const char *path) { events.push_back("arcade-root:" + std::string(path)); }
 static const char *get_arcade_root(int) { forbidden("ROM root query"); return ""; }
+#endif
 static void ProgressMessage(const char * = nullptr, const char * = nullptr, int = 0, int = 0) {}
 static void user_io_write_gameid(const char *, int, const char *) { forbidden("game ID branch"); }
 static void set_ovr_buttons(const char *, int) { forbidden("buttons branch"); }
@@ -310,7 +340,49 @@ static void observe_file_return(const char *api,const char *name,int result)
 {
     file_returns.push_back("{\"api\":"+quote(api)+",\"name\":"+quote(name)+",\"return_observed\":true,\"return_value\":"+std::to_string(result)+"}");
 }
+static buffer_data *observed_entry_buffer_init(unsigned int size) { buffer_init_calls++; return buffer_init(size); }
+static void observed_entry_buffer_destroy(buffer_data *data) { buffer_destroy_calls++; buffer_destroy(data); }
+#if HAVE_MRA_PATHS
+#define OBSERVE_NVRAM_SELECTOR_ENTRY 1
+static int observed_selector_root_capture(const char *,char *,size_t,arcade_path_error *);
+static int observed_selector_root(const char *,const char *,bool,arcade_path_error *);
+static int observed_selector_target(const char *,const char *,char *,size_t);
+static void observed_selector_dip_load();
+static void observed_selector_dip_send();
+#endif
+#define buffer_init observed_entry_buffer_init
+#define buffer_destroy observed_entry_buffer_destroy
 #include "arcade_nvram_production.inc"
+#undef buffer_destroy
+#undef buffer_init
+#if HAVE_MRA_PATHS
+static bool prepared_nvram_binding() { return nvram_path_ready&&!nvram_ready&&nvram_idx==0&&nvram_size==0&&!nvram_pending.depth; }
+static int observed_selector_root_capture(const char *root,char *out,size_t capacity,arcade_path_error *error)
+{
+    const int result=arcade_path_copy_root(root,out,capacity,error);
+    if(observe_selector_entry) {
+        selector_root_capture_observed=true;selector_root_capture_return=result;selector_root_capture_error=static_cast<int>(*error);
+    }
+    return result;
+}
+static int observed_selector_root(const char *path,const char *root,bool cores,arcade_path_error *error)
+{
+    if(observe_selector_entry)selector_ready_before_root=nvram_path_ready;
+    const int result=set_arcade_root(path,root,cores,error);
+    if(observe_selector_entry) {
+        selector_root_observed=true;selector_root_return=result;selector_root_error=static_cast<int>(*error);
+    }
+    return result;
+}
+static int observed_selector_target(const char *root,const char *name,char *out,size_t capacity)
+{
+    const int result=arcade_nvm_target(root,name,out,capacity);
+    if(observe_selector_entry) { selector_target_observed=true;selector_target_prepared=result==1; }
+    return result;
+}
+static void observed_selector_dip_load() { dip_load_calls++;arcade_sw_load(); }
+static void observed_selector_dip_send() { dip_send_calls++;arcade_sw_send(); }
+#endif
 
 static std::string nvm_document(const std::string &index, const std::string &size)
 {
@@ -331,6 +403,13 @@ static void select(const std::string &basename, const std::string &xml)
         ",\"index\":"+std::to_string(nvram_idx)+",\"size\":"+std::to_string(nvram_size)+
         ",\"selector_return\":"+std::to_string(result)+",\"parser_completed\":"+
         (parser_completed ? "true":"false")+",\"parser_return\":"+std::to_string(parser_result)+"}");
+#if HAVE_MRA_PATHS
+    const bool root_rejected=null_root||storage_root.empty()||storage_root[0]!='/'||storage_root.size()>=1024;
+    if(root_rejected) {
+        check(result==0&&!parser_seen&&!parser_completed,"intact selector completes rejected root before unread XML");
+        check(!count("path-stat")&&!count("rom-")&&!count("load-open:")&&!count("spi:")&&!nvram_ready&&!nvram_path_ready,"rejected root retires NVM before stat/SAX/ROM/DIP endpoints");
+    } else
+#endif
     check(result==0 && parser_seen && parser_completed,"intact selector completed and actual parser return recorded");
 }
 static void seed(const std::string &basename, unsigned length)
@@ -388,10 +467,180 @@ template<size_t N> struct Guarded {
     }
     bool unchanged(const std::array<char,N> &prior) const { return guards() && !std::memcmp(data.data(),prior.data(),N); }
 };
+using EntryEndpoints = std::array<unsigned,14>;
+static EntryEndpoints entry_endpoints()
+{
+    return {{count("path-stat"),buffer_init_calls,buffer_destroy_calls,parser_calls,parser_streams,
+        count("rom-"),count("load-open:"),count("save-open:"),count("spi:"),static_cast<unsigned>(transfers.size()),
+        dip_load_calls,dip_send_calls,count("nvm-new:"),count("mkdir-query:")}};
+}
+static std::string endpoint_delta(const EntryEndpoints &before)
+{
+    const char *names[]={"stat","buffer_init","buffer_destroy","SAX_calls","SAX_streams","ROM",
+        "load_open","save_open","SPI","transfers","DIP_load","DIP_send","NVM_payload_alloc","directory_query"};
+    const auto after=entry_endpoints();std::string out="{";
+    for(size_t i=0;i<after.size();++i) { if(i)out+=',';out+=quote(names[i])+":"+std::to_string(after[i]-before[i]); }
+    return out+"}";
+}
+static std::string selector_binding_state()
+{
+    std::string out="{\"index\":"+std::to_string(nvram_idx)+",\"size\":"+std::to_string(nvram_size)+",\"name\":"+quote(nvram_name);
+#if HAVE_NVRAM_BINDING
+    out+=",\"binding_observation_available\":true,\"ready\":"+std::string(nvram_ready?"true":"false")+
+        ",\"path_ready\":"+(nvram_path_ready?"true":"false")+",\"path\":"+quote(nvram_path)+
+        ",\"pending_depth\":"+std::to_string(nvram_pending.depth)+",\"pending_applicable\":"+(nvram_pending.applicable?"true":"false");
+#else
+    out+=",\"binding_observation_available\":false,\"ready\":null,\"path_ready\":null,\"path\":null,\"pending_depth\":null,\"pending_applicable\":null";
+#endif
+    return out+"}";
+}
+static int select_raw(const char *path,const std::string &xml,bool inject_ownership=false)
+{
+    document=xml;parser_seen=parser_completed=false;parser_result=-999;requested_xml.clear();
+    selector_root_capture_observed=selector_root_observed=selector_target_observed=selector_target_prepared=false;
+    selector_ready_before_root=prepared_seen_at_games=false;
+    selector_root_capture_return=selector_root_return=-999;selector_root_capture_error=selector_root_error=-999;
+    events.push_back("raw-selection:"+(path?std::string(path):std::string("<null>")));
+    const auto before=entry_endpoints();
+    const unsigned roots_before=root_calls,games_before=count("find-games:");
+    const std::string binding_before=selector_binding_state();
+#if HAVE_MRA_PATHS
+    std::array<char,1024> old_arcade,old_mame;
+    std::memcpy(old_arcade.data(),arcade_root,old_arcade.size());std::memcpy(old_mame.data(),mame_root,old_mame.size());
+#endif
+    fail_selector_ownership=inject_ownership;observe_selector_entry=true;
+    int result;
+    try { result=arcade_send_rom(path); }
+    catch(...) { fail_selector_ownership=false;observe_selector_entry=false;throw; }
+    const int result_errno=errno;observe_selector_entry=false;
+    const bool ownership_consumed=inject_ownership&&!fail_selector_ownership;fail_selector_ownership=false;
+    selector_outcomes.push_back("{\"raw_xml\":"+(path?quote(path):"null")+",\"return_observed\":true,\"return_value\":"+
+        std::to_string(result)+",\"errno\":"+std::to_string(result_errno)+",\"parser_return_observed\":"+
+        (parser_completed?"true":"false")+",\"parser_return\":"+(parser_completed?std::to_string(parser_result):"null")+
+        ",\"requested_xml\":"+quote(requested_xml)+",\"ownership_rejection_consumed\":"+(ownership_consumed?"true":"false")+
+        ",\"root_provider_calls\":"+std::to_string(root_calls-roots_before)+",\"find_games_calls\":"+std::to_string(count("find-games:")-games_before)+
+        ",\"path_observers_available\":"+(HAVE_MRA_PATHS?"true":"false")+
+        ",\"root_capture_return_observed\":"+(selector_root_capture_observed?"true":"false")+
+        ",\"root_capture_return\":"+(selector_root_capture_observed?std::to_string(selector_root_capture_return):"null")+
+        ",\"root_capture_error\":"+(selector_root_capture_observed?std::to_string(selector_root_capture_error):"null")+
+        ",\"root_set_return_observed\":"+(selector_root_observed?"true":"false")+
+        ",\"root_set_return\":"+(selector_root_observed?std::to_string(selector_root_return):"null")+
+        ",\"root_set_error\":"+(selector_root_observed?std::to_string(selector_root_error):"null")+
+        ",\"target_return_observed\":"+(selector_target_observed?"true":"false")+
+        ",\"target_prepared\":"+(selector_target_observed?(selector_target_prepared?"true":"false"):"null")+
+        ",\"prepared_ready_before_root\":"+(selector_root_observed?(selector_ready_before_root?"true":"false"):"null")+
+        ",\"prepared_at_metadata_query\":"+(prepared_seen_at_games?"true":"false")+
+        ",\"binding_before\":"+binding_before+",\"binding_after\":"+selector_binding_state()+
+#if HAVE_MRA_PATHS
+        ",\"all_root_bytes_preserved\":"+(!std::memcmp(old_arcade.data(),arcade_root,old_arcade.size())&&
+            !std::memcmp(old_mame.data(),mame_root,old_mame.size())?"true":"false")+
+#else
+        ",\"all_root_bytes_preserved\":null"+
+#endif
+        ",\"endpoints\":"+endpoint_delta(before)+"}");
+    errno=result_errno;
+    return result;
+}
+static std::string raw_selector_path(size_t length,bool absolute)
+{
+    std::string out=absolute?"/media/fat/":"";
+    while(length-out.size()>209)out+=std::string(199,'d')+'/';
+    out+=std::string(length-out.size()-9,'e')+"/Game.mra";
+    check(out.size()==length,"Raw selector path exact delivered byte count");
+    size_t start=0;
+    for(size_t i=0;i<=out.size();++i)if(i==out.size()||out[i]=='/') {
+        check(i-start<=255,"Raw selector components remain bounded synthetic fixtures");start=i+1;
+    }
+    return out;
+}
+#if HAVE_MRA_PATHS
+static void selector_reject(const char *path,bool ownership,int expected_errno,const char *expected_info,bool prepared)
+{
+    std::array<char,1024> old_arcade,old_mame;
+    std::memcpy(old_arcade.data(),arcade_root,old_arcade.size());std::memcpy(old_mame.data(),mame_root,old_mame.size());
+    const auto before=entry_endpoints();const unsigned old_rejections=ownership_rejections;
+    const int result=select_raw(path,nvm_document("9","3"),ownership);const int result_errno=errno;
+    check(result==0&&result_errno==expected_errno,"Actual rejected selector return0 and failure errno observed");
+    check(!parser_seen&&!parser_completed&&requested_xml.empty()&&entry_endpoints()==before,
+          "Rejected direct selection reaches no stat/buffer/SAX/ROM/load/save/SPI/DIP endpoint");
+    check(!nvram_ready&&!nvram_path_ready&&nvram_idx==0&&nvram_size==0&&nvram_name[0]==0&&nvram_path[0]==0&&
+          !nvram_pending.depth&&!nvram_pending.applicable,"Entry/root rejection retires prior or prepared readiness and declaration");
+    check(!std::memcmp(old_arcade.data(),arcade_root,old_arcade.size())&&!std::memcmp(old_mame.data(),mame_root,old_mame.size()),
+          "Failed root preparation preserves all prior root bytes");
+    check(events.back()==std::string("path-info:")+expected_info,"Actual new path-error UI category observed");
+    if(prepared)check(selector_target_observed&&selector_target_prepared&&selector_root_observed&&selector_ready_before_root&&
+                     selector_root_return==0&&selector_root_error==ARCADE_PATH_TOO_LONG,
+                     "Actual successful NVM target and pre-root readiness precede rejected root setter");
+    if(ownership)check(ownership_rejections==old_rejections+1&&ownership_bytes>=std::strlen(path)+1&&!selector_root_capture_observed&&
+                       !selector_target_observed&&!selector_root_observed,"Actual long XML ownership allocation is rejected once before providers");
+    save();check(save_completed&&entry_endpoints()==before,"Retired binding cannot perform later save/core/directory operation");
+    selector_outcomes.back().pop_back();
+    selector_outcomes.back()+=",\"void_save_return_observed\":true,\"endpoints_after_disabled_save\":"+endpoint_delta(before)+"}";
+}
+static void selector_recovery()
+{
+    null_root=false;storage_root="/media/fat";unterminated_games=false;
+    const unsigned reads=nvm_reads,rx=count("rx:");saved_target.clear();
+    select("Recovered.mra",nvm_document("9","3"));save();
+    check(nvram_ready&&nvram_path_ready&&nvram_idx==9&&nvram_size==3&&nvm_reads==reads+1&&count("rx:")==rx+1&&
+          saved_target=="/media/fat/config/nvram/Recovered.nvm"&&temporary_payload.size()==3,
+          "Later fitting selection and first save recover after entry/root rejection");
+}
+#endif
 static bool excluded;
 static void scenario(const std::string &name)
 {
-    if(name.find("ordinary-")==0) {
+    if(name.find("selector-")==0&&name!="selector-raw-spelling") {
+#if HAVE_MRA_PATHS
+        const unsigned iterations=name=="selector-root-invalid"?4:name=="selector-entry-null"?2:1;
+        for(unsigned i=0;i<iterations;++i) {
+            null_root=false;storage_root="/media/fat";unterminated_games=false;
+            seed("A.mra",8);select("A.mra",nvm_document("4","8"));
+            check(nvram_ready&&nvram_path_ready&&nvram_idx==4&&nvram_size==8,"Prior valid NVM binding exists before rejected new selection");
+            const std::string path=raw_selector_path(name=="selector-raw-overlong"?1024:200,true);
+            int expected_errno=EINVAL;const char *message="Invalid XML path!";bool prepared=false;
+            if(name=="selector-entry-allocation")expected_errno=ENOMEM,message="XML path unavailable!";
+            if(name=="selector-root-invalid") {
+                if(i==0)null_root=true;
+                if(i==1)storage_root.clear();
+                if(i==2)storage_root="relative";
+                if(i==3)storage_root="/"+std::string(1023,'R'),expected_errno=ENAMETOOLONG,message="XML path too long!";
+            }
+            if(name=="selector-root-metadata")unterminated_games=true;
+            if(name=="selector-root-metadata"||name=="selector-raw-overlong") {
+                expected_errno=ENAMETOOLONG;message="XML path too long!";prepared=true;
+            }
+            const unsigned roots=root_calls;
+            selector_reject(name=="selector-entry-null"?(i?"":nullptr):path.c_str(),name=="selector-entry-allocation",expected_errno,message,prepared);
+            if(name=="selector-entry-null") {
+                if(i==0)check(root_calls==roots&&!selector_root_capture_observed&&!selector_root_observed&&!selector_target_observed,
+                              "NULL guard retires before root provider or identity target");
+                else check(root_calls==roots+1&&selector_root_capture_observed&&selector_root_capture_return==1&&
+                           selector_root_observed&&selector_root_return==0&&selector_root_error==ARCADE_PATH_INVALID&&!selector_target_observed,
+                           "Empty raw XML captures root then rejects setter without prepared identity or later endpoints");
+            }
+            if(name=="selector-root-metadata")check(prepared_seen_at_games,"Metadata termination rejection observes prepared NVM target but retired declaration");
+            selector_recovery();
+        }
+#else
+        excluded=true;exclusion_reason="MRA entry/path guard absent; no unsafe null/copy or invented allocation-return continuation";
+        check(true,"New direct-selector rejection guard unavailable in selected historical source");
+#endif
+    } else if(name=="selector-raw-spelling") {
+        for(bool absolute:{false,true}) {
+            const std::string path=raw_selector_path(1023,absolute);
+            const int result=select_raw(path.c_str(),nvm_document("4","8"));
+            check(result==0&&parser_seen&&parser_completed&&parser_result==1&&requested_xml==path,
+                  "Fitting relative/absolute raw XML retains exact cwd/absolute fopen spelling");
+            const unsigned rx=count("rx:");save();
+            check(nvram_idx==4&&nvram_size==8&&count("rx:")==rx+1&&saved_target=="/media/fat/config/nvram/Game.nvm"&&temporary_payload.size()==8,
+                  "Fitting raw selector retains NVM binding and first-save identity");
+        }
+        const int result=select_raw("Recovered.mra",nvm_document("9","3"));save();
+        check(result==0&&parser_completed&&requested_xml=="Recovered.mra"&&nvram_idx==9&&nvram_size==3&&
+              saved_target=="/media/fat/config/nvram/Recovered.nvm"&&temporary_payload.size()==3,
+              "Raw relative selection recovers complete declaration after fitting repeated direct controls");
+    } else if(name.find("ordinary-")==0) {
         if(name=="ordinary-full") seed("Game.mra",8);
         if(name=="ordinary-short") seed("Game.mra",3);
         if(name=="ordinary-empty") seed("Game.mra",0);
@@ -591,7 +840,7 @@ static void scenario(const std::string &name)
             check(!rc && result_errno==ENOMEM && out.unchanged(before),"target allocation failure leaves complete output unchanged");
         }
 #else
-        excluded=true; check(true,"new private helper unavailable in selected historical source");
+        excluded=true;exclusion_reason="NVRAM private helper absent"; check(true,"new private helper unavailable in selected historical source");
 #endif
     } else if(name=="root-null" || name=="root-relative" || name=="root-path-reject") {
         if(name=="root-null") null_root=true;
@@ -635,12 +884,14 @@ int main(int argc,char **argv)
     catch(const std::exception &e) { fail_scalar_allocation=false; std::fprintf(stderr,"Fixture error: %s\n",e.what()); return 2; }
     if(trapped) check(!save_completed && saved_target.empty(),"ended trap has no invented later persistent write or save return");
     check(!fpga_enabled,"all observed core helper scopes are complete");
-    std::printf("JSON {\"case\":%s,\"checks\":%u,\"failures\":%u,\"excluded\":%s,\"case_body_completed\":%s,\"trapped\":%s,\"trap\":%s,\"int_bits\":%zu,\"long_bits\":%zu,\"size_t_bits\":%zu,\"final_index\":%d,\"final_size\":%d,\"final_name\":%s,\"parser_completed\":%s,\"parser_return\":%s,\"save_started\":%s,\"save_completed\":%s,\"allocation_rejection_injected\":%s,\"allocation_rejections\":%u,\"allocation_seen\":%s,\"allocation_bytes\":%s,\"root_calls\":%u,\"nvm_load_opens\":%u,\"saved_target\":%s,\"snapshots\":%s,\"numbers\":%s,\"file_returns\":%s,\"transfers\":%s,\"events\":%s}\n",
+    std::printf("JSON {\"case\":%s,\"checks\":%u,\"failures\":%u,\"excluded\":%s,\"case_body_completed\":%s,\"trapped\":%s,\"trap\":%s,\"int_bits\":%zu,\"long_bits\":%zu,\"size_t_bits\":%zu,\"final_index\":%d,\"final_size\":%d,\"final_name\":%s,\"parser_completed\":%s,\"parser_return\":%s,\"save_started\":%s,\"save_completed\":%s,\"allocation_rejection_injected\":%s,\"allocation_rejections\":%u,\"allocation_seen\":%s,\"allocation_bytes\":%s,\"root_calls\":%u,\"nvm_load_opens\":%u,\"saved_target\":%s,\"snapshots\":%s,\"numbers\":%s,\"file_returns\":%s,\"transfers\":%s,\"events\":%s,\"exclusion_reason\":%s,\"selector_outcomes\":%s,\"ownership_rejections\":%u,\"ownership_bytes\":%zu,\"buffer_init_calls\":%u,\"buffer_destroy_calls\":%u,\"DIP_load_calls\":%u,\"DIP_send_calls\":%u}\n",
         quote(name).c_str(),checks,failures,excluded?"true":"false",case_body_completed?"true":"false",trapped?"true":"false",quote(trap).c_str(),
         sizeof(int)*CHAR_BIT,sizeof(unsigned long)*CHAR_BIT,sizeof(size_t)*CHAR_BIT,nvram_idx,nvram_size,quote(nvram_name).c_str(),
         parser_completed?"true":"false",parser_completed?std::to_string(parser_result).c_str():"null",
         save_started?"true":"false",save_completed?"true":"false",allocation_rejections?"true":"false",allocation_rejections,
         allocation_seen?"true":"false",allocation_seen?quote(std::to_string(allocation_bytes)).c_str():"null",root_calls,nvm_reads,
-        quote(saved_target).c_str(),array(snapshots,true).c_str(),array(parsed_numbers,true).c_str(),array(file_returns,true).c_str(),array(transfers).c_str(),array(events).c_str());
+        quote(saved_target).c_str(),array(snapshots,true).c_str(),array(parsed_numbers,true).c_str(),array(file_returns,true).c_str(),array(transfers).c_str(),array(events).c_str(),
+        quote(exclusion_reason).c_str(),array(selector_outcomes,true).c_str(),ownership_rejections,ownership_bytes,
+        buffer_init_calls,buffer_destroy_calls,dip_load_calls,dip_send_calls);
     return failures?1:0;
 }

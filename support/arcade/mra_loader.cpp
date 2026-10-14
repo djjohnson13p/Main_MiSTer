@@ -340,39 +340,114 @@ void arcade_sw_load()
 	FileLoadConfig(path, &sw->dip_cur, sizeof(sw->dip_cur));
 }
 
-static void set_arcade_root(const char *path)
+enum arcade_path_error {
+	ARCADE_PATH_OK, ARCADE_PATH_INVALID, ARCADE_PATH_TOO_LONG, ARCADE_PATH_UNAVAILABLE
+};
+
+static int arcade_path_fail(arcade_path_error *error, int code)
 {
-	strcpy(arcade_root, path);
-	char *p = strstr(arcade_root, "/_");
-	if (p) p = strchr(p + 1, '/');
-
-	if (p) *p = 0;
-	else strcpy(arcade_root, getRootDir());
-
-	printf("arcade_root %s\n", arcade_root);
-
-	strcpy(mame_root, "mame");
-	if (findGamesDir(mame_root, sizeof(mame_root)))
-	{
-		char *p = strrchr(mame_root, '/');
-		if (p) *p = 0;
-		else mame_root[0] = 0;
-	}
-	else
-	{
-		strcpy(mame_root, arcade_root);
-	}
-
-	printf("mame_root %s\n", mame_root);
+	if (error) *error = code == ENAMETOOLONG ? ARCADE_PATH_TOO_LONG :
+		code == EINVAL ? ARCADE_PATH_INVALID : ARCADE_PATH_UNAVAILABLE;
+	errno = code;
+	return 0;
 }
 
-static const char *get_arcade_root(int rbf)
+static int arcade_path_copy(const char *name, char *out, size_t capacity, arcade_path_error *error = nullptr)
+{
+	if (error) *error = ARCADE_PATH_OK;
+	if (!name || !out || !capacity) return arcade_path_fail(error, EINVAL);
+	const size_t length = strlen(name);
+	if (length >= capacity) return arcade_path_fail(error, ENAMETOOLONG);
+	memmove(out, name, length + 1);
+	return 1;
+}
+
+static int arcade_path_copy_root(const char *root, char *out, size_t capacity, arcade_path_error *error = nullptr)
+{
+	if (!root || root[0] != '/') return arcade_path_fail(error, EINVAL);
+	return arcade_path_copy(root, out, capacity, error);
+}
+
+// Admit the entire literal join before deriving a parent or publishing aliases.
+static int arcade_path_join(const char *root, const char *name, char *out, size_t capacity,
+	arcade_path_error *error = nullptr, bool parent = false)
+{
+	if (error) *error = ARCADE_PATH_OK;
+	if (!root || !name || !out || !capacity) return arcade_path_fail(error, EINVAL);
+	const size_t root_length = strlen(root), name_length = strlen(name);
+	if (name_length >= capacity || capacity - name_length < 2 || root_length > capacity - name_length - 2)
+		return arcade_path_fail(error, ENAMETOOLONG);
+	try
+	{
+		std::string owned(root, root_length);
+		owned += '/';
+		owned.append(name, name_length);
+		if (parent) owned.resize(owned.find_last_of('/'));
+		memcpy(out, owned.c_str(), owned.size() + 1);
+	}
+	catch (const std::bad_alloc &) { return arcade_path_fail(error, ENOMEM); }
+	return 1;
+}
+
+static int arcade_path_parent(const char *root, const char *name, char *out, size_t capacity, arcade_path_error *error = nullptr)
+{
+	return arcade_path_join(root, name, out, capacity, error, true);
+}
+
+static int arcade_path_resolve(const char *root, const char *name, char *out, size_t capacity, arcade_path_error *error = nullptr)
+{
+	if (error) *error = ARCADE_PATH_OK;
+	if (!root || root[0] != '/' || !name || !name[0]) return arcade_path_fail(error, EINVAL);
+	if (!FileResolveFullPath(root, name, out, capacity)) return arcade_path_fail(error, errno);
+	return 1;
+}
+
+static void arcade_path_info(arcade_path_error error, bool rbf)
+{
+	if (error == ARCADE_PATH_TOO_LONG) Info(rbf ? "RBF path too long!" : "XML path too long!");
+	else if (error == ARCADE_PATH_INVALID) Info(rbf ? "Invalid RBF path!" : "Invalid XML path!");
+	else Info(rbf ? "RBF path unavailable!" : "XML path unavailable!");
+}
+
+static int set_arcade_root(const char *path, const char *root = nullptr, bool need_cores = true,
+	arcade_path_error *error = nullptr)
+{
+	if (error) *error = ARCADE_PATH_OK;
+	if (!path || !path[0]) return arcade_path_fail(error, EINVAL);
+	char pending_arcade[kBigTextSize], fallback[kBigTextSize];
+	if (!arcade_path_copy(path, pending_arcade, sizeof(pending_arcade), error) ||
+		!arcade_path_copy_root(root ? root : getRootDir(), fallback, sizeof(fallback), error)) return 0;
+	char *p = strstr(pending_arcade, "/_");
+	if (p) p = strchr(p + 1, '/');
+	if (p) *p = 0;
+	else memcpy(pending_arcade, fallback, strlen(fallback) + 1);
+
+	char pending_mame[kBigTextSize] = "mame";
+	if (need_cores && !arcade_path_join(pending_arcade, "cores", pending_mame, sizeof(pending_mame), error)) return 0;
+	memcpy(pending_mame, "mame", 5);
+	if (findGamesDir(pending_mame, sizeof(pending_mame)))
+	{
+		if (strnlen(pending_mame, sizeof(pending_mame)) == sizeof(pending_mame))
+			return arcade_path_fail(error, ENAMETOOLONG);
+		p = strrchr(pending_mame, '/');
+		if (p) *p = 0;
+		else pending_mame[0] = 0;
+	}
+	else memcpy(pending_mame, pending_arcade, strlen(pending_arcade) + 1);
+
+	// Both root candidates are complete before either shared value changes.
+	memcpy(arcade_root, pending_arcade, strlen(pending_arcade) + 1);
+	memcpy(mame_root, pending_mame, strlen(pending_mame) + 1);
+	printf("arcade_root %s\n", arcade_root);
+	printf("mame_root %s\n", mame_root);
+	return 1;
+}
+
+static const char *get_arcade_root(int rbf, arcade_path_error *error = nullptr)
 {
 	static char path[kBigTextSize];
-
-	if (!rbf) strcpy(path, mame_root);
-	else snprintf(path, sizeof(path), "%s/cores", arcade_root);
-
+	if (rbf ? !arcade_path_join(arcade_root, "cores", path, sizeof(path), error) :
+		!arcade_path_copy(mame_root, path, sizeof(path), error)) return NULL;
 	return path;
 }
 
@@ -1467,6 +1542,11 @@ static int xml_read_pre_parse(XMLEvent evt, const XMLNode* node, SXML_CHAR* text
 
 int arcade_send_rom(const char *xml)
 {
+	if (!xml) { arcade_path_fail(nullptr, EINVAL); arcade_nvm_reset(); arcade_path_info(ARCADE_PATH_INVALID, false); return 0; }
+	std::string owned_xml;
+	try { owned_xml.assign(xml); }
+	catch (const std::bad_alloc &) { arcade_path_fail(nullptr, ENOMEM); arcade_nvm_reset(); arcade_path_info(ARCADE_PATH_UNAVAILABLE, false); return 0; }
+	xml = owned_xml.c_str();
 	const char *p = strrchr(xml, '/');
 	p = p ? p + 1 : xml;
 	snprintf(switches.name, sizeof(switches.name), "%s", p);
@@ -1475,18 +1555,24 @@ int arcade_send_rom(const char *xml)
 		strcpy(switches.name + name_length - 4, ".dip");
 
 	arcade_nvm_reset();
-	if (arcade_nvm_name(p, nvram_name, sizeof(nvram_name)))
-	{
-		const char *root = getRootDir();
-		nvram_path_ready = arcade_nvm_target(root, nvram_name, nvram_path, sizeof(nvram_path));
-	}
+	const bool nvm_name_ready = arcade_nvm_name(p, nvram_name, sizeof(nvram_name));
+	char captured_root[kBigTextSize];
+	arcade_path_error path_error = ARCADE_PATH_OK;
+	const bool root_ready = arcade_path_copy_root(getRootDir(), captured_root, sizeof(captured_root), &path_error);
+	if (nvm_name_ready && root_ready)
+		nvram_path_ready = arcade_nvm_target(captured_root, nvram_name, nvram_path, sizeof(nvram_path));
 
 	SAX_Callbacks sax;
 	SAX_Callbacks_init(&sax);
 
 	sax.all_event = xml_send_rom;
 
-	set_arcade_root(xml);
+	if (!root_ready || !set_arcade_root(xml, captured_root, false, &path_error))
+	{
+		arcade_nvm_reset();
+		arcade_path_info(path_error, false);
+		return 0;
+	}
 
 	// create the structure we use for the XML parser
 	struct arc_struct arc_info;
@@ -1551,18 +1637,34 @@ void arcade_check_error()
 	}
 }
 
-static const char *get_rbf_path(const char *rbfname)
+static const char *get_rbf_path(const char *rbfname, const char *root = nullptr, arcade_path_error *error = nullptr)
 {
 	static char path[kBigTextSize];
-	snprintf(path, sizeof(path), "%s/%s", getRootDir(), rbfname);
-	char *p = strrchr(path, '/');
-	*p = 0;
+	char name[kBigTextSize], captured_root[kBigTextSize];
+	if (!arcade_path_copy(rbfname, name, sizeof(name), error) ||
+		!arcade_path_copy_root(root ? root : getRootDir(), captured_root, sizeof(captured_root), error) ||
+		!arcade_path_parent(captured_root, name, path, sizeof(path), error)) return NULL;
 	return path;
 }
 
-static const char *get_rbf(const char *xml, int arcade)
+static bool arcade_rbf_match(const char *fragment, const char *entry, bool arcade_prefix)
+{
+	if (arcade_prefix)
+	{
+		if (strncasecmp(entry, "Arcade-", 7)) return false;
+		entry += 7;
+	}
+	const size_t length = strlen(fragment);
+	return !strncasecmp(fragment, entry, length) && (entry[length] == '.' || entry[length] == '_');
+}
+
+static const char *get_rbf(const char *xml, int arcade, const char *root = nullptr, arcade_path_error *error = nullptr)
 {
 	static char rbfname[kBigTextSize];
+	if (error) *error = ARCADE_PATH_OK;
+	char input[kBigTextSize], captured_root[kBigTextSize];
+	if (!arcade_path_copy(xml, input, sizeof(input), error) ||
+		(root && !arcade_path_copy_root(root, captured_root, sizeof(captured_root), error))) return NULL;
 
 	rbfname[0] = 0;
 	SAX_Callbacks sax;
@@ -1571,27 +1673,29 @@ static const char *get_rbf(const char *xml, int arcade)
 	sax.all_event = xml_scan_rbf;
 	arcade_rbf_scan scan = {};
 	scan.output = rbfname;
-	if (!XMLDoc_parse_file_SAX(xml, &sax, &scan) || scan.invalid || scan.owner.depth || !rbfname[0]) return NULL;
+	if (!XMLDoc_parse_file_SAX(input, &sax, &scan) || scan.invalid || scan.owner.depth || !rbfname[0]) return NULL;
 
 	/* once we have the rbfname fragment from the MRA xml file
 	 * search the arcade folder for the match */
 	struct dirent *entry;
 	DIR *dir = 0;
 
-	const char *dirname;
+	char dirname[kBigTextSize];
 	const char *filename;
+	const char *prepared;
 	if (arcade)
 	{
-		dirname = get_arcade_root(1);
+		prepared = get_arcade_root(1, error);
 		filename = rbfname;
 	}
 	else
 	{
-		dirname = get_rbf_path(rbfname);
+		prepared = get_rbf_path(rbfname, root ? captured_root : nullptr, error);
 		filename = strrchr(rbfname, '/');
 		if (filename) filename++;
 		else filename = rbfname;
 	}
+	if (!prepared || !arcade_path_copy(prepared, dirname, sizeof(dirname), error)) return NULL;
 
 	if (!(dir = opendir(dirname)))
 	{
@@ -1606,14 +1710,11 @@ static const char *get_rbf(const char *xml, int arcade)
 		len = strlen(entry->d_name);
 		if (entry->d_type != DT_DIR && len > 4 && !strcasecmp(entry->d_name+len-4,".rbf"))
 		{
-			static char newstring[kBigTextSize];
 			//printf("entry name: %s\n",entry->d_name);
 
 			if (arcade)
 			{
-				snprintf(newstring, kBigTextSize, "Arcade-%s", filename);
-				len = strlen(newstring);
-				if (!strncasecmp(newstring, entry->d_name, len) && (entry->d_name[len] == '.' || entry->d_name[len] == '_'))
+				if (arcade_rbf_match(filename, entry->d_name, true))
 				{
 					if (!lastfound[0] || strcmp(lastfound, entry->d_name) < 0)
 					{
@@ -1622,9 +1723,7 @@ static const char *get_rbf(const char *xml, int arcade)
 				}
 			}
 
-			snprintf(newstring, kBigTextSize, "%s", filename);
-			len = strlen(newstring);
-			if (!strncasecmp(newstring, entry->d_name, len) && (entry->d_name[len] == '.' || entry->d_name[len] == '_'))
+			if (arcade_rbf_match(filename, entry->d_name, false))
 			{
 				if (!lastfound[0] || strcmp(lastfound, entry->d_name) < 0)
 				{
@@ -1634,8 +1733,12 @@ static const char *get_rbf(const char *xml, int arcade)
 		}
 	}
 
-	if (lastfound[0]) snprintf(rbfname, sizeof(rbfname), "%s/%s", dirname, lastfound);
+	char selected[kBigTextSize];
+	const int ready = !lastfound[0] || arcade_path_join(dirname, lastfound, selected, sizeof(selected), error);
+	const int path_errno = errno;
 	closedir(dir);
+	if (!ready) { errno = path_errno; return NULL; }
+	if (lastfound[0]) memcpy(rbfname, selected, strlen(selected) + 1);
 
 	return lastfound[0] ? rbfname : NULL;
 }
@@ -1644,16 +1747,24 @@ int xml_load(const char *xml)
 {
 	MenuHide();
 	static char path[kBigTextSize];
+	char input[kBigTextSize], captured_root[kBigTextSize], selected[kBigTextSize];
+	arcade_path_error error = ARCADE_PATH_OK;
+	if (!xml || !xml[0]) arcade_path_fail(&error, EINVAL);
+	else if (arcade_path_copy(xml, input, sizeof(input), &error) &&
+		arcade_path_copy_root(getRootDir(), captured_root, sizeof(captured_root), &error))
+		arcade_path_resolve(captured_root, input, selected, sizeof(selected), &error);
+	if (error != ARCADE_PATH_OK) { arcade_path_info(error, false); return 0; }
 
-	if(xml[0] == '/') strcpy(path, xml);
-	else snprintf(path, sizeof(path), "%s/%s", getRootDir(), xml);
-
-	int len = strlen(xml);
-	int is_arcade = (len > 4) && !strcasecmp(xml + len - 4, ".mra");
-
-	if (is_arcade) set_arcade_root(path);
+	const size_t len = strlen(input);
+	const int is_arcade = (len > 4) && !strcasecmp(input + len - 4, ".mra");
+	if (is_arcade && !set_arcade_root(selected, captured_root, true, &error))
+	{
+		arcade_path_info(error, false);
+		return 0;
+	}
+	memcpy(path, selected, strlen(selected) + 1);
 	printf("xml_load [%s]\n", path);
-	const char *rbf = get_rbf(path, is_arcade);
+	const char *rbf = get_rbf(path, is_arcade, captured_root, &error);
 
 	if (rbf)
 	{
@@ -1662,7 +1773,8 @@ int xml_load(const char *xml)
 	}
 	else
 	{
-		Info("No rbf found!");
+		if (error != ARCADE_PATH_OK) arcade_path_info(error, true);
+		else Info("No rbf found!");
 	}
 
 	return 0;

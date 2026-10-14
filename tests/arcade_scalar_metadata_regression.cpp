@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <new>
 #include <string>
 #include <vector>
 #include <dirent.h>
@@ -66,11 +67,13 @@ static void check(bool ok,const char *label)
 }
 static void reject(const char *label) { throw std::runtime_error(label); }
 static const char *getRootDir() { ++active->roots; return "/media/fat"; }
+#if !HAVE_MRA_PATHS
 static const char *get_arcade_root(int kind)
 {
     if(kind!=1)reject("Unselected arcade root kind");
     ++active->arcade_roots; return "/media/fat/_Arcade/cores";
 }
+#endif
 static DIR *fixture_opendir(const char *path)
 {
     if(std::strcmp(path,"/media/fat/_Arcade/cores")&&std::strcmp(path,"/media/fat/Cores"))reject("Unselected directory query");
@@ -362,6 +365,9 @@ int main(int argc,char **argv)
 {
     if(argc!=2)return 2;
     const std::string scenario=argv[1]; bool excluded=false,trapped=false; std::string boundary;
+#if HAVE_MRA_PATHS
+    std::strcpy(arcade_root,"/media/fat/_Arcade"); std::strcpy(mame_root,"/media/fat/_Arcade");
+#endif
     try { scenarios(scenario,excluded); }
     catch(const Boundary &error) {
         if(scenario!="rbf-overflow1024"||HAVE_SCALAR_CONTEXTS) { std::fprintf(stderr,"Unexpected boundary: %s\n",error.what()); return 2; }

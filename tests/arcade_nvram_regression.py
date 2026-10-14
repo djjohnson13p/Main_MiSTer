@@ -40,8 +40,12 @@ SCENARIOS = (
     "allocation-save", "save-open-failure", "save-write-failure",
     "save-close-failure", "save-rename-failure",
     "number-builder", "name-builder", "target-builder", "large-legal-budget",
+    "selector-entry-null", "selector-entry-allocation", "selector-root-invalid",
+    "selector-root-metadata", "selector-raw-overlong", "selector-raw-spelling",
 )
 PRIOR_EXCLUSIONS = frozenset(("number-builder", "name-builder", "target-builder"))
+PATH_EXCLUSIONS = frozenset(("selector-entry-null", "selector-entry-allocation",
+                            "selector-root-invalid", "selector-root-metadata", "selector-raw-overlong"))
 
 
 def digest(data):
@@ -70,8 +74,11 @@ def generate(source):
          "file_io.cpp", "file_io.h", "user_io.cpp", "user_io.h"))
     # Candidate detection is updated to the actual private helper marker.
     checked = "static int arcade_nvm_name(" in arcade
+    mra_paths = "enum arcade_path_error {" in arcade
     file_checked = "static int resolve_mutation_path(" in io
-    types = "#define HAVE_NVRAM_BINDING %d\n#define HAVE_CHECKED_FILE %d\n" % (checked,file_checked)
+    types = "#define HAVE_NVRAM_BINDING %d\n#define HAVE_CHECKED_FILE %d\n#define HAVE_MRA_PATHS %d\n" % (checked,file_checked,mra_paths)
+    if mra_paths:
+        types += definition(arcade, "enum arcade_path_error {", "support/arcade/mra_loader.cpp")
     types += "struct fileZipArchive;\n" + definition(ioh, "struct fileTYPE\n", "file_io.h")
     for marker in ("struct dip_struct\n", "struct sw_struct\n"):
         types += definition(header, marker, "support/arcade/mra_loader.h")
@@ -79,6 +86,9 @@ def generate(source):
                           (r"^#define CONFIG_DIR[^\n]+", ioh),
                           (r"^#define kBigTextSize[^\n]+", arcade)):
         types += re.search(pattern, text, re.M).group() + "\n"
+    if mra_paths:
+        for marker in ("static char arcade_root", "static char mame_root"):
+            types += next(line for line in arcade.splitlines() if line.startswith(marker)) + "\n"
     types += definition(arcade, "struct arc_struct {", "support/arcade/mra_loader.cpp")
     for marker in ("static sw_struct switches", "static char arcade_error_msg",
                    "static char arcade_setname", "static int      unitlen", "static int      romlen"):
@@ -137,9 +147,19 @@ def generate(source):
         production += definition(arcade, "static int arcade_dip_path(", "support/arcade/mra_loader.cpp")
     production += "#define strcat observed_strcat\n" + definition(arcade, "void arcade_sw_load()", "support/arcade/mra_loader.cpp") + "#undef strcat\n"
     production += "#define snprintf observed_snprintf\n#define strtoul observed_strtoul\n"
+    if mra_paths:
+        for marker in ("static int arcade_path_fail(", "static int arcade_path_copy(",
+                       "static int arcade_path_copy_root(", "static int arcade_path_join(",
+                       "static void arcade_path_info(", "static int set_arcade_root(",
+                       "static const char *get_arcade_root("):
+            production += definition(arcade, marker, "support/arcade/mra_loader.cpp")
     production += definition(arcade, "static int xml_send_rom(", "support/arcade/mra_loader.cpp")
     production += "#define XMLDoc_parse_file_SAX observed_parse_file\n"
+    if mra_paths:
+        production += "#ifdef OBSERVE_NVRAM_SELECTOR_ENTRY\n#define arcade_path_copy_root observed_selector_root_capture\n#define set_arcade_root observed_selector_root\n#define arcade_nvm_target observed_selector_target\n#define arcade_sw_load observed_selector_dip_load\n#define arcade_sw_send observed_selector_dip_send\n#endif\n"
     production += definition(arcade, "int arcade_send_rom(", "support/arcade/mra_loader.cpp")
+    if mra_paths:
+        production += "#undef arcade_sw_send\n#undef arcade_sw_load\n#undef arcade_nvm_target\n#undef set_arcade_root\n#undef arcade_path_copy_root\n"
     production += "#undef XMLDoc_parse_file_SAX\n#undef strtoul\n#undef snprintf\n"
     parser = source["sxmlc.c"]
     opening = '#include "sxmlc.h"'
@@ -156,10 +176,12 @@ def main():
     parser.add_argument("--source-ref")
     parser.add_argument("--report", "--output", dest="report", type=Path)
     args = parser.parse_args()
+    test_before = {n:digest((ROOT/"tests"/n).read_bytes()) for n in ("arcade_nvram_regression.py", "arcade_nvram_regression.cpp")}
     raw = {n: subprocess.check_output(["git", "-C", str(ROOT), "show", args.source_ref+":"+n])
            if args.source_ref else (ROOT/n).read_bytes() for n in SOURCES}
     source = {n:b.decode("utf-8").replace("\r\n", "\n") for n,b in raw.items()}
     types, production, parser_source, checked = generate(source)
+    mra_paths = "enum arcade_path_error {" in source["support/arcade/mra_loader.cpp"]
     cxx = [args.cxx] if Path(args.cxx).is_file() else shlex.split(args.cxx, posix=os.name!="nt")
     default_cc = str(Path(cxx[0]).with_name(Path(cxx[0]).name.replace("g++", "gcc")))
     cc_value = args.cc or default_cc
@@ -203,7 +225,8 @@ def main():
                 raise RuntimeError("Case body did not complete: "+scenario)
             if rows[0]["trapped"] and not rows[0]["failures"]:
                 raise RuntimeError("Guard trap cannot count as repaired success: "+scenario)
-            if rows[0]["excluded"] != (not checked and scenario in PRIOR_EXCLUSIONS):
+            expected_exclusion = (not checked and scenario in PRIOR_EXCLUSIONS) or (not mra_paths and scenario in PATH_EXCLUSIONS)
+            if rows[0]["excluded"] != expected_exclusion or bool(rows[0]["exclusion_reason"]) != expected_exclusion:
                 raise RuntimeError("Unexpected historical exclusion: "+scenario)
             runs.append({"scenario":scenario,"returncode":result.returncode,"summary":rows[0],
                          "stdout":result.stdout,"stderr":result.stderr})
@@ -212,19 +235,25 @@ def main():
         raise RuntimeError("Incomplete or duplicate case coverage")
     if not args.source_ref and {n:digest((ROOT/n).read_bytes()) for n in SOURCES}!={n:digest(b) for n,b in raw.items()}:
         raise RuntimeError("Production changed during fixture")
+    test_after = {n:digest((ROOT/"tests"/n).read_bytes()) for n in test_before}
+    if test_after != test_before:
+        raise RuntimeError("Fixture changed during run")
     summary = {"cases":len(runs),"checks":sum(r["summary"]["checks"] for r in runs),
                "failures":sum(r["summary"]["failures"] for r in runs),
                "excluded":sum(r["summary"]["excluded"] for r in runs),
                "prevented_boundaries":sum(r["summary"]["trapped"] for r in runs),
+               "old68_cases":sum(r["scenario"] not in PATH_EXCLUSIONS and r["scenario"] != "selector-raw-spelling" for r in runs),
+               "new_selector_cases":sum(r["scenario"].startswith("selector-") for r in runs),
+               "new_path_exclusions":sum(r["summary"]["excluded"] and r["scenario"] in PATH_EXCLUSIONS for r in runs),
                "user_target_io":0,"hardware_io":0}
     report = {"source_ref":args.source_ref or "working tree","checked_candidate":checked,
               "source_raw_sha256":{n:digest(b) for n,b in raw.items()},
               "source_normalized_sha256":{n:digest(t.encode()) for n,t in source.items()},
-              "test_sha256":{n:digest((ROOT/"tests"/n).read_bytes()) for n in ("arcade_nvram_regression.py","arcade_nvram_regression.cpp")},
+              "test_sha256":test_after,"test_raw_sha256_before":test_before,"test_raw_sha256_after":test_after,
               "extracted_sha256":{n:digest(t.encode()) for n,t in generated.items()},
               "builds":builds,"coverage_complete":True,"scenario_order":list(SCENARIOS),
               "summary":summary,"runs":runs,
-              "limits":"Actual selected file-SAX parser with fopen redirected to disposable seekable streams; actual buffer, callback/selector/NVRAM helpers and endpoints/file helpers/core helpers above lower spies. Historical traps end cases without invented return/transfer. New private-helper cases are explicitly excluded on older source. Nonthrowing array budget failures are injected local allocation failures, not product size caps or successful payload operations. Host widths are recorded; ARM execution/hardware/persistence/timing/durability untested."}
+              "limits":"Actual selected file-SAX parser with fopen redirected to disposable seekable streams; actual buffer, callback/selector/NVRAM/path helpers and endpoints/file helpers/core helpers above lower spies. Forwarding observers count actual selector root capture/setter/target and DIP/buffer calls without replacing policy. Historical traps end cases without invented return/transfer; five new guard scenarios are explicitly excluded when the MRA path guard is absent, separately from three prior private-helper exclusions. Fitting raw selector spelling/recovery runs on all refs. One-shot scalar allocation rejection observes actual long selector XML ownership, not a mocked success. Nonthrowing array budget failures are injected local allocation failures, not product size caps or successful payload operations. Earlier argv/DEFMRA/general paths, ARM execution/hardware/persistence/timing/durability untested; controlled repeated direct APIs do not imply production state reuse across successful restart."}
     if args.report:
         args.report.write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8",newline="\n")
     print(json.dumps(summary))
