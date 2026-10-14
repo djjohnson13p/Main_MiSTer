@@ -92,7 +92,8 @@ static int trace_FileReadSec(fileTYPE *file,void *data)
 {
     int result=FileReadSec(file,data);
     if(truncate_spc_after_dsp && file->offset==66048) {
-        truncate(path_for_aux.c_str(),4000); truncate_spc_after_dsp=false;
+        if (truncate(path_for_aux.c_str(),4000)) std::abort();
+        truncate_spc_after_dsp=false;
     }
     return result;
 }
@@ -157,7 +158,7 @@ static int helper_cases()
     for(int keep : {0,1024}) {
         const std::vector<uint8_t> original=contents("Rom.sfc");
         fileTYPE file; FileOpen(&file,path("Rom.sfc").c_str(),1);
-        truncate(path("Rom.sfc").c_str(),keep);
+        if (truncate(path("Rom.sfc").c_str(),keep)) std::abort();
         expected(snes_get_header(&file)==nullptr,"SNES header rejects zero/positive-short full reads");
         uint32_t out=123;
         expected(snes_get_mirrored_rom(&file,&out)==nullptr,"SNES mirror rejects zero/positive-short full reads");
@@ -215,7 +216,7 @@ static int helper_cases()
     {
         const std::vector<uint8_t> original=contents("Tape.uef");
         fileTYPE file; FileOpen(&file,path("Tape.uef").c_str(),1); transfer_bytes.clear();
-        truncate(path("Tape.uef").c_str(),2);
+        if (truncate(path("Tape.uef").c_str(),2)) std::abort();
         int descriptors=open_descriptor_count();
         expected(!UEF_FileSend(&file,1) && transfer_bytes.empty(),"raw UEF copy requires its entire advertised source");
         expected(open_descriptor_count()==descriptors,"short raw-copy path closes temporary file");

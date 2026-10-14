@@ -75,7 +75,8 @@ def main():
  const int read_count = FileReadAdv(file, data, count, failres);
  read_counts.push_back(read_count); after_crcs.push_back(mz_crc32(0, static_cast<const unsigned char *>(data), count)); ordered_events.push_back("read");
  if (truncate_aux_after_header && std::string(file->name)=="bsx_bios.rom" && read_count==count && count==32768) {
-     truncate(path_for_aux.c_str(),0); truncate_aux_after_header=false;
+     if (truncate(path_for_aux.c_str(),0)) std::abort();
+     truncate_aux_after_header=false;
  }
  if (target_active) std::printf("JSON {\\"kind\\":\\"read\\",\\"file\\":\\"%s\\",\\"requested\\":%d,\\"actual\\":%d,\\"before_crc\\":%u,\\"after_crc\\":%u}\\n", file->name, count, read_count, before_crcs.back(), after_crcs.back());
  return read_count;
